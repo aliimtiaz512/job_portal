@@ -2,6 +2,7 @@ import os
 import time
 import random
 import logging
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -16,7 +17,6 @@ from models import Job, Session, init_db
 
 load_dotenv()
 
-# Ensure the X display is available for Chrome when run inside a background thread
 if not os.environ.get("DISPLAY"):
     os.environ["DISPLAY"] = ":0"
 
@@ -81,7 +81,6 @@ def linkedin_login(driver):
     human_delay(0.5, 1.5)
     password_field.send_keys(Keys.RETURN)
 
-    # Wait for dashboard or feed
     try:
         wait.until(
             EC.any_of(
@@ -97,54 +96,27 @@ def linkedin_login(driver):
     human_delay(2, 4)
 
 
-def search_jobs(driver):
-    logger.info("Searching for AI/ML jobs...")
-    scraper_status["progress"] = "Searching for AI/ML jobs..."
-    wait = WebDriverWait(driver, 20)
+def navigate_to_jobs(driver, keyword: str, date_posted: str = "", salary_range: str = ""):
+    logger.info(f"Searching LinkedIn jobs: keyword='{keyword}'")
+    scraper_status["progress"] = f"Searching LinkedIn for '{keyword}'..."
 
-    # Click on the search bar in the global nav
-    try:
-        search_box = wait.until(
-            EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "input.search-global-typeahead__input")
-            )
-        )
-    except TimeoutException:
-        # Fallback: navigate directly to jobs search
-        driver.get(
-            "https://www.linkedin.com/jobs/search/?keywords=ai%2Fml+jobs&origin=GLOBAL_SEARCH_HEADER"
-        )
-        human_delay(3, 5)
-        return
+    params = [
+        f"keywords={quote_plus(keyword)}",
+        "location=United+States",
+        "f_WT=2",
+    ]
+    if date_posted:
+        params.append(f"f_TPR={date_posted}")
+    if salary_range:
+        params.append(f"f_SB2={salary_range}")
 
-    search_box.click()
-    human_delay(0.5, 1)
-    search_box.clear()
-    search_box.send_keys("ai/ml jobs")
-    human_delay(0.5, 1)
-    search_box.send_keys(Keys.RETURN)
-    human_delay(2, 4)
-
-    # Click "Jobs" filter tab if present
-    try:
-        jobs_tab = wait.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(@aria-label,'Jobs')] | //a[contains(@href,'/jobs/search/')]")
-            )
-        )
-        jobs_tab.click()
-        human_delay(2, 3)
-    except TimeoutException:
-        # Already on jobs or redirect happened
-        if "jobs/search" not in driver.current_url:
-            driver.get(
-                "https://www.linkedin.com/jobs/search/?keywords=ai%2Fml+jobs"
-            )
-            human_delay(3, 5)
+    url = "https://www.linkedin.com/jobs/search/?" + "&".join(params)
+    logger.info(f"Navigating to: {url}")
+    driver.get(url)
+    human_delay(3, 5)
 
 
 def collect_job_urls(driver):
-    """Collect all job URLs listed on page 1."""
     logger.info("Collecting job card URLs from page 1...")
     scraper_status["progress"] = "Collecting job listings from page 1..."
     wait = WebDriverWait(driver, 20)
@@ -160,14 +132,12 @@ def collect_job_urls(driver):
 
     human_delay(2, 3)
 
-    # Scroll to load all jobs on page 1
     for _ in range(5):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         human_delay(1, 2)
     driver.execute_script("window.scrollTo(0, 0);")
     human_delay(1, 2)
 
-    # Try multiple selectors for job card links
     selectors = [
         "a.job-card-list__title--link",
         "a.job-card-container__link",
@@ -182,7 +152,6 @@ def collect_job_urls(driver):
         for link in links:
             href = link.get_attribute("href")
             if href and "/jobs/view/" in href:
-                # Normalize URL — remove query params after the ID
                 base = href.split("?")[0].rstrip("/")
                 if base not in job_urls:
                     job_urls.append(base)
@@ -194,7 +163,6 @@ def collect_job_urls(driver):
 
 
 def extract_text(driver, selectors, attribute=None):
-    """Try multiple CSS selectors and return the first match's text."""
     for selector in selectors:
         try:
             el = driver.find_element(By.CSS_SELECTOR, selector)
@@ -207,22 +175,9 @@ def extract_text(driver, selectors, attribute=None):
 
 
 def extract_job_details_fields(driver):
-    """
-    Scrape employment_type, location_type, salary, skills, and about_job
-    directly from the #job-details DOM.
-
-    LinkedIn embeds structured bold labels inside the description body:
-      <strong>Type:</strong>  Contract
-      <strong>Compensation:</strong>  $22 - $70/hour
-      <strong>Location:</strong>  Remote
-    We find each <strong>, walk up to its nearest <p> ancestor, then split
-    the paragraph text on ":" to get the value — far more reliable than
-    parsing the flat .text dump.
-    """
     result = {
         "employment_type": "",
         "location_type": "",
-        "salary": "",
         "skills": "",
         "about_job": "",
     }
@@ -232,10 +187,8 @@ def extract_job_details_fields(driver):
     except NoSuchElementException:
         return result
 
-    # Full raw text for about_job
     result["about_job"] = details_el.text.strip()
 
-    # Map every likely bold label to our field names
     label_field_map = {
         "type": "employment_type",
         "employment type": "employment_type",
@@ -244,12 +197,6 @@ def extract_job_details_fields(driver):
         "location": "location_type",
         "work location": "location_type",
         "workplace type": "location_type",
-        "compensation": "salary",
-        "salary": "salary",
-        "pay": "salary",
-        "rate": "salary",
-        "pay range": "salary",
-        "hourly rate": "salary",
     }
 
     try:
@@ -261,7 +208,6 @@ def extract_job_details_fields(driver):
             if not field or result[field]:
                 continue
 
-            # Walk up to the nearest <p> ancestor — it holds the full "Label: Value" text
             try:
                 container = strong.find_element(By.XPATH, "ancestor::p[1]")
             except NoSuchElementException:
@@ -278,7 +224,6 @@ def extract_job_details_fields(driver):
     except Exception as e:
         logger.warning(f"DOM extraction of #job-details fields failed: {e}")
 
-    # Skills — LinkedIn puts them under a dedicated <h3 class="js-skills-header">
     try:
         skills_header = details_el.find_element(By.CSS_SELECTOR, ".js-skills-header")
         skills_p = skills_header.find_element(By.XPATH, "following-sibling::p[1]")
@@ -290,43 +235,79 @@ def extract_job_details_fields(driver):
 
 
 def scrape_job_detail(driver, job_url, main_handle):
-    """Open job URL in a new tab, scrape details, close tab."""
     driver.execute_script(f"window.open('{job_url}', '_blank');")
     human_delay(1, 2)
 
-    # Switch to the new tab
     new_handle = [h for h in driver.window_handles if h != main_handle][-1]
     driver.switch_to.window(new_handle)
 
     wait = WebDriverWait(driver, 25)
     try:
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "h1")))
+        wait.until(
+            EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "h1")),
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, ".job-details-jobs-unified-top-card__company-name")
+                ),
+            )
+        )
     except TimeoutException:
         logger.warning(f"Timeout loading job page: {job_url}")
 
     human_delay(2, 3)
 
-    # ------ Job Title ------
-    job_title = extract_text(driver, [
-        "div.display-flex.justify-space-between.flex-wrap.mt2 h1",
-        ".jobs-unified-top-card__job-title h1",
-        ".jobs-unified-top-card__job-title",
-        "h1.t-24.t-bold",
-        "h1",
-    ])
+    job_title = ""
+    try:
+        title_el = driver.find_element(
+            By.XPATH, "//p[.//svg[@id='verified-medium']]"
+        )
+        job_title = driver.execute_script(
+            "var n=arguments[0].firstChild;"
+            "return n ? n.textContent.trim() : '';",
+            title_el,
+        )
+    except (NoSuchElementException, Exception):
+        pass
 
-    # ------ Company Name ------
+    if not job_title:
+        try:
+            title_els = driver.find_elements(
+                By.XPATH,
+                "//div[contains(@class,'job-details-jobs-unified-top-card')]"
+                "//p[not(ancestor::div[@id='job-details'])]",
+            )
+            for el in title_els[:5]:
+                t = driver.execute_script(
+                    "var n=arguments[0].firstChild;"
+                    "return n ? n.textContent.trim() : arguments[0].textContent.trim();",
+                    el,
+                )
+                if t and 3 < len(t) < 200:
+                    job_title = t
+                    break
+        except Exception:
+            pass
+
+    if not job_title:
+        job_title = extract_text(driver, [
+            ".job-details-jobs-unified-top-card__job-title h1",
+            ".job-details-jobs-unified-top-card__job-title",
+            "div.display-flex.justify-space-between.flex-wrap.mt2 h1",
+            ".jobs-unified-top-card__job-title h1",
+            ".jobs-unified-top-card__job-title",
+            "h1.t-24.t-bold",
+            "h1",
+        ])
+
     company_name = extract_text(driver, [
+        ".job-details-jobs-unified-top-card__company-name a",
+        ".job-details-jobs-unified-top-card__company-name",
         ".jobs-unified-top-card__company-name a",
         ".jobs-unified-top-card__company-name",
         "div.display-flex.align-items-center a.app-aware-link",
         ".topcard__org-name-link",
-        ".job-details-jobs-unified-top-card__company-name a",
-        ".job-details-jobs-unified-top-card__company-name",
     ])
 
-    # ------ About the Job + structured fields (DOM-based) ------
-    # Scroll to the bottom so LinkedIn lazy-loads the description, then wait for it
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
     human_delay(1, 2)
     driver.execute_script("window.scrollTo(0, 0);")
@@ -337,7 +318,6 @@ def scrape_job_detail(driver, job_url, main_handle):
         driver.execute_script("arguments[0].scrollIntoView(true);", details_el)
         human_delay(1.5, 2.5)
 
-        # Click "Show more" if the description is collapsed
         try:
             show_more = details_el.find_element(
                 By.CSS_SELECTOR,
@@ -353,12 +333,10 @@ def scrape_job_detail(driver, job_url, main_handle):
 
     fields = extract_job_details_fields(driver)
     employment_type = fields["employment_type"]
-    location_type   = fields["location_type"]
-    salary          = fields["salary"]
-    skills          = fields["skills"]
-    about_job       = fields["about_job"]
+    location_type = fields["location_type"]
+    skills = fields["skills"]
+    about_job = fields["about_job"]
 
-    # Fallback for employment/location if not found in description body
     if not employment_type or not location_type:
         spans = driver.find_elements(
             By.CSS_SELECTOR,
@@ -366,7 +344,7 @@ def scrape_job_detail(driver, job_url, main_handle):
             ".job-details-jobs-unified-top-card__job-insight span",
         )
         remote_kw = {"remote", "hybrid", "on-site", "onsite", "in-person"}
-        time_kw   = {"full-time", "part-time", "contract", "internship", "temporary"}
+        time_kw = {"full-time", "part-time", "contract", "internship", "temporary"}
         for span in spans:
             txt = span.text.strip()
             low = txt.lower()
@@ -375,7 +353,6 @@ def scrape_job_detail(driver, job_url, main_handle):
             if any(kw in low for kw in time_kw) and not employment_type:
                 employment_type = txt
 
-    # Last fallback — preferences widget
     if not employment_type or not location_type:
         prefs = extract_text(driver, [
             ".job-details-fit-level-preferences",
@@ -384,7 +361,7 @@ def scrape_job_detail(driver, job_url, main_handle):
         ])
         if prefs:
             remote_kw = {"remote", "hybrid", "on-site", "onsite", "in-person"}
-            time_kw   = {"full-time", "part-time", "contract", "internship", "temporary"}
+            time_kw = {"full-time", "part-time", "contract", "internship", "temporary"}
             for part in [p.strip() for p in prefs.split("\n") if p.strip()]:
                 low = part.lower()
                 if any(kw in low for kw in remote_kw) and not location_type:
@@ -392,7 +369,6 @@ def scrape_job_detail(driver, job_url, main_handle):
                 if any(kw in low for kw in time_kw) and not employment_type:
                     employment_type = part
 
-    # If about_job is still empty, try alternative selectors
     if not about_job:
         about_job = extract_text(driver, [
             ".jobs-description-content__text",
@@ -405,14 +381,13 @@ def scrape_job_detail(driver, job_url, main_handle):
     human_delay(1, 2)
 
     return {
-        "job_title":       job_title       or "N/A",
-        "company_name":    company_name    or "N/A",
-        "location_type":   location_type   or "N/A",
+        "job_title": job_title or "N/A",
+        "company_name": company_name or "N/A",
+        "location_type": location_type or "N/A",
         "employment_type": employment_type or "N/A",
-        "salary":          salary          or "N/A",
-        "skills":          skills          or "N/A",
-        "about_job":       about_job       or "N/A",
-        "job_url":         job_url,
+        "skills": skills or "N/A",
+        "about_job": about_job or "N/A",
+        "job_url": job_url,
     }
 
 
@@ -421,9 +396,8 @@ def save_job(data):
     try:
         existing = session.query(Job).filter_by(job_url=data["job_url"]).first()
         if existing:
-            # Update fields that are still missing (N/A or empty) on existing records
             updated = False
-            for field in ("employment_type", "location_type", "salary", "skills", "about_job"):
+            for field in ("employment_type", "location_type", "skills", "about_job"):
                 new_val = data.get(field, "")
                 old_val = getattr(existing, field, "") or ""
                 if new_val and new_val != "N/A" and (not old_val or old_val == "N/A"):
@@ -446,8 +420,9 @@ def save_job(data):
         session.close()
 
 
-def run_scraper():
+def run_scraper(keyword: str = "AI ML jobs", date_posted: str = "", salary_range: str = ""):
     global scraper_status
+
     scraper_status.update({
         "running": True,
         "progress": "Starting...",
@@ -462,7 +437,7 @@ def run_scraper():
     try:
         driver = build_driver()
         linkedin_login(driver)
-        search_jobs(driver)
+        navigate_to_jobs(driver, keyword, date_posted, salary_range)
 
         main_handle = driver.current_window_handle
         job_urls = collect_job_urls(driver)

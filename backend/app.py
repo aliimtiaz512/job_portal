@@ -1,6 +1,7 @@
 import io
 import threading
 import pandas as pd
+from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -22,11 +23,17 @@ except Exception as e:
     print(f"[WARNING] DB init failed — check DATABASE_URL in .env: {e}")
 
 
+class ScrapeRequest(BaseModel):
+    keyword: str
+    date_posted: str = ""
+    salary_range: str = ""
+
+
 @app.post("/api/scrape")
-def start_scrape(background_tasks: BackgroundTasks):
+def start_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks = BackgroundTasks()):
     if scraper_status["running"]:
         raise HTTPException(status_code=409, detail="Scraper is already running.")
-    background_tasks.add_task(run_scraper)
+    background_tasks.add_task(run_scraper, req.keyword, req.date_posted, req.salary_range)
     return {"message": "Scraper started."}
 
 
@@ -39,7 +46,7 @@ def get_status():
 def get_jobs():
     session = Session()
     try:
-        jobs = session.query(Job).order_by(Job.scraped_at.desc()).all()
+        jobs = session.query(Job).order_by(Job.id.desc()).all()
         return [j.to_dict() for j in jobs]
     finally:
         session.close()
@@ -82,7 +89,7 @@ def delete_job(job_id: int):
 def export_csv():
     session = Session()
     try:
-        jobs = session.query(Job).order_by(Job.scraped_at.desc()).all()
+        jobs = session.query(Job).order_by(Job.id.desc()).all()
         if not jobs:
             raise HTTPException(status_code=404, detail="No jobs to export.")
 

@@ -6,11 +6,9 @@ export interface Job {
   company_name: string;
   location_type: string;
   employment_type: string;
-  salary: string;
   skills: string;
   about_job: string;
   job_url: string;
-  scraped_at: string | null;
 }
 
 export interface ScraperStatus {
@@ -20,10 +18,22 @@ export interface ScraperStatus {
   scraped: number;
   errors: string[];
   done: boolean;
+  daily_runs: number;
+  daily_date: string;
 }
 
-export async function startScraper(): Promise<{ message?: string; detail?: string }> {
-  const res = await fetch(`${API_BASE}/scrape`, { method: "POST" });
+export interface ScrapeParams {
+  keyword: string;
+  date_posted: string;
+  salary_range: string;
+}
+
+export async function startScraper(params: ScrapeParams): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/scrape`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
   return res.json();
 }
 
