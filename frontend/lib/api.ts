@@ -7,6 +7,8 @@ export interface Job {
   job_url: string;
 }
 
+export type StartupJob = Job; // same shape, different table
+
 export interface ScraperStatus {
   running: boolean;
   progress: string;
@@ -21,6 +23,7 @@ export interface ScraperStatus {
 
 export interface ScraperRun {
   id: number;
+  scraper: string;
   keyword: string;
   started_at: string;
   finished_at: string;
@@ -32,13 +35,31 @@ export interface ScraperRun {
   run_status: "success" | "partial" | "failed";
 }
 
-export interface ScrapeParams {
+export interface LinkedInScrapeParams {
   keyword: string;
   date_posted: string;
   salary_range: string;
 }
 
-export async function startScraper(params: ScrapeParams): Promise<{ message?: string; detail?: string }> {
+export interface StartupJobsScrapeParams {
+  keyword: string;
+  job_type: string;
+  salary: string;
+  time_filter: string;
+}
+
+export interface IndeedScrapeParams {
+  keyword: string;
+  pay: string;
+  job_type: string;
+  date_posted: string;
+}
+
+// ── LinkedIn ──────────────────────────────────────────────────────────────────
+
+export async function startLinkedInScraper(
+  params: LinkedInScrapeParams
+): Promise<{ message?: string; detail?: string }> {
   const res = await fetch(`${API_BASE}/scrape`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -47,31 +68,99 @@ export async function startScraper(params: ScrapeParams): Promise<{ message?: st
   return res.json();
 }
 
-export async function getStatus(): Promise<ScraperStatus> {
+export async function getLinkedInStatus(): Promise<ScraperStatus> {
   const res = await fetch(`${API_BASE}/status`);
   return res.json();
 }
 
-export async function getJobs(): Promise<Job[]> {
+export async function getLinkedInJobs(): Promise<Job[]> {
   const res = await fetch(`${API_BASE}/jobs`);
   return res.json();
 }
 
-export async function clearJobs(): Promise<{ message?: string; detail?: string }> {
+export async function clearLinkedInJobs(): Promise<{ message?: string; detail?: string }> {
   const res = await fetch(`${API_BASE}/jobs/clear`, { method: "DELETE" });
   return res.json();
 }
 
-export async function deleteJob(id: number): Promise<{ message?: string; detail?: string }> {
+export async function deleteLinkedInJob(id: number): Promise<{ message?: string; detail?: string }> {
   const res = await fetch(`${API_BASE}/jobs/${id}`, { method: "DELETE" });
   return res.json();
 }
 
-export async function getRuns(): Promise<ScraperRun[]> {
-  const res = await fetch(`${API_BASE}/runs`);
+export function exportLinkedInCsvUrl(): string {
+  return `${API_BASE}/export/csv`;
+}
+
+// ── Startup Jobs ──────────────────────────────────────────────────────────────
+
+export async function startStartupJobsScraper(
+  params: StartupJobsScrapeParams
+): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/scrape/startupjobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
   return res.json();
 }
 
-export function exportCsvUrl(): string {
-  return `${API_BASE}/export/csv`;
+export async function getStartupJobsStatus(): Promise<ScraperStatus> {
+  const res = await fetch(`${API_BASE}/status/startupjobs`);
+  return res.json();
+}
+
+export async function getStartupJobs(): Promise<StartupJob[]> {
+  const res = await fetch(`${API_BASE}/jobs/startupjobs`);
+  return res.json();
+}
+
+export async function clearStartupJobs(): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/jobs/startupjobs/clear`, { method: "DELETE" });
+  return res.json();
+}
+
+export function exportStartupJobsCsvUrl(): string {
+  return `${API_BASE}/export/startupjobs/csv`;
+}
+
+// ── Indeed ────────────────────────────────────────────────────────────────────
+
+export type IndeedJob = Job;
+
+export async function startIndeedScraper(
+  params: IndeedScrapeParams
+): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/scrape/indeed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return res.json();
+}
+
+export async function getIndeedStatus(): Promise<ScraperStatus> {
+  const res = await fetch(`${API_BASE}/status/indeed`);
+  return res.json();
+}
+
+export async function getIndeedJobs(): Promise<IndeedJob[]> {
+  const res = await fetch(`${API_BASE}/jobs/indeed`);
+  return res.json();
+}
+
+export async function clearIndeedJobs(): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/jobs/indeed/clear`, { method: "DELETE" });
+  return res.json();
+}
+
+export function exportIndeedCsvUrl(): string {
+  return `${API_BASE}/export/indeed/csv`;
+}
+
+// ── Shared ────────────────────────────────────────────────────────────────────
+
+export async function getRuns(): Promise<ScraperRun[]> {
+  const res = await fetch(`${API_BASE}/runs`);
+  return res.json();
 }

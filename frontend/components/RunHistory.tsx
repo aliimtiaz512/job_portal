@@ -24,6 +24,18 @@ const STATUS_STYLES: Record<string, string> = {
   failed:  "bg-red-100 text-red-700 border-red-200",
 };
 
+const SCRAPER_STYLES: Record<string, string> = {
+  linkedin:    "bg-blue-100 text-blue-700 border-blue-200",
+  startupjobs: "bg-orange-100 text-orange-700 border-orange-200",
+  indeed:      "bg-violet-100 text-violet-700 border-violet-200",
+};
+
+const SCRAPER_LABELS: Record<string, string> = {
+  linkedin:    "LinkedIn",
+  startupjobs: "Startup.jobs",
+  indeed:      "Indeed",
+};
+
 export default function RunHistory({ runs }: { runs: ScraperRun[] }) {
   if (!runs.length) {
     return (
@@ -45,6 +57,7 @@ export default function RunHistory({ runs }: { runs: ScraperRun[] }) {
           <thead>
             <tr className="bg-gray-50 text-xs font-black text-gray-500 uppercase tracking-wider">
               <th className="px-5 py-3 text-left">Date / Time</th>
+              <th className="px-5 py-3 text-left">Portal</th>
               <th className="px-5 py-3 text-left">Keyword</th>
               <th className="px-5 py-3 text-center">Pages</th>
               <th className="px-5 py-3 text-center">Found</th>
@@ -58,7 +71,12 @@ export default function RunHistory({ runs }: { runs: ScraperRun[] }) {
             {runs.map((r) => (
               <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                 <td className="px-5 py-3 text-gray-600 whitespace-nowrap">{formatDate(r.started_at)}</td>
-                <td className="px-5 py-3 font-semibold text-gray-800 max-w-[180px] truncate">{r.keyword}</td>
+                <td className="px-5 py-3">
+                  <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold border ${SCRAPER_STYLES[r.scraper] ?? "bg-gray-100 text-gray-600"}`}>
+                    {SCRAPER_LABELS[r.scraper] ?? r.scraper}
+                  </span>
+                </td>
+                <td className="px-5 py-3 font-semibold text-gray-800 max-w-[160px] truncate">{r.keyword}</td>
                 <td className="px-5 py-3 text-center tabular-nums text-gray-700">{r.pages_scraped}</td>
                 <td className="px-5 py-3 text-center tabular-nums text-blue-700 font-bold">{r.jobs_found}</td>
                 <td className="px-5 py-3 text-center tabular-nums text-emerald-700 font-bold">{r.jobs_saved}</td>
