@@ -5,8 +5,10 @@ import {
   clearJobs,
   exportCsvUrl,
   getJobs,
+  getRuns,
   getStatus,
   Job,
+  ScraperRun,
   ScraperStatus,
   ScrapeParams,
   startScraper,
@@ -14,6 +16,7 @@ import {
 import StatusBar from "@/components/StatusBar";
 import StatsRow from "@/components/StatsRow";
 import JobsTable from "@/components/JobsTable";
+import RunHistory from "@/components/RunHistory";
 
 const DEFAULT_STATUS: ScraperStatus = {
   running: false,
@@ -22,6 +25,7 @@ const DEFAULT_STATUS: ScraperStatus = {
   scraped: 0,
   errors: [],
   done: false,
+  elapsed_seconds: 0,
   daily_runs: 0,
   daily_date: "",
 };
@@ -44,6 +48,7 @@ const SALARY_OPTIONS = [
 export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [filtered, setFiltered] = useState<Job[]>([]);
+  const [runs, setRuns] = useState<ScraperRun[]>([]);
   const [status, setStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [showStatus, setShowStatus] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" | "" } | null>(null);
@@ -70,12 +75,19 @@ export default function Home() {
     }
   }, []);
 
+  const loadRuns = useCallback(async () => {
+    try {
+      const data = await getRuns();
+      setRuns(data);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     const q = tableSearch.toLowerCase();
     setFiltered(
       jobs.filter((j) => {
         if (!q) return true;
-        return `${j.job_title} ${j.company_name} ${j.about_job}`.toLowerCase().includes(q);
+        return `${j.job_title} ${j.company_name}`.toLowerCase().includes(q);
       })
     );
   }, [jobs, tableSearch]);
@@ -90,13 +102,15 @@ export default function Home() {
           clearInterval(pollRef.current!);
           pollRef.current = null;
           loadJobs();
+          loadRuns();
         }
       } catch {}
     }, 2000);
-  }, [loadJobs]);
+  }, [loadJobs, loadRuns]);
 
   useEffect(() => {
     loadJobs();
+    loadRuns();
     getStatus()
       .then((s) => {
         setStatus(s);
@@ -109,7 +123,7 @@ export default function Home() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [loadJobs, startPolling]);
+  }, [loadJobs, loadRuns, startPolling]);
 
   const handleStartScraper = async () => {
     if (!keyword.trim()) {
@@ -130,7 +144,7 @@ export default function Home() {
       }
       showToast("Scraper started!", "success");
       setShowStatus(true);
-      setStatus({ ...DEFAULT_STATUS, running: true, progress: "Starting...", daily_runs: status.daily_runs + 1 });
+      setStatus({ ...DEFAULT_STATUS, running: true, progress: "Starting..." });
       startPolling();
     } catch {
       showToast("Cannot reach backend. Is it running on port 8000?", "error");
@@ -262,7 +276,7 @@ export default function Home() {
         {showStatus && <StatusBar status={status} />}
       </div>
 
-      <StatsRow jobs={jobs} dailyRuns={status.daily_runs} />
+      <StatsRow jobs={jobs} dailyRuns={status.daily_runs ?? 0} runs={runs} />
 
       <div className="flex items-center gap-3 mb-5">
         <div className="relative flex-1 max-w-md">
@@ -281,6 +295,10 @@ export default function Home() {
       </div>
 
       <JobsTable jobs={filtered} />
+
+      <div className="mt-8">
+        <RunHistory runs={runs} />
+      </div>
 
       {toast && (
         <div

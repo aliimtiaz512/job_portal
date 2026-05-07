@@ -1,12 +1,15 @@
 import io
-import threading
+import json
+import os
+import subprocess
+import sys
 import pandas as pd
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from models import Job, Session, init_db
-from scraper import run_scraper, scraper_status
+from models import Job, ScraperRun, Session, init_db
+from scraper import STATUS_FILE
 
 app = FastAPI(title="LinkedIn Job Scraper API")
 
@@ -20,7 +23,31 @@ app.add_middleware(
 try:
     init_db()
 except Exception as e:
-    print(f"[WARNING] DB init failed — check DATABASE_URL in .env: {e}")
+    print(f"[WARNING] DB init failed: {e}")
+
+# Path to the standalone scraper script
+_SCRAPER_SCRIPT = os.path.join(os.path.dirname(__file__), "run_scraper.py")
+
+# Track the running subprocess
+_proc: subprocess.Popen | None = None
+
+_DEFAULT_STATUS = {
+    "running": False, "progress": "", "total": 0,
+    "scraped": 0, "errors": [], "done": False,
+    "elapsed_seconds": 0, "daily_runs": 0, "daily_date": "",
+}
+
+
+def _read_status() -> dict:
+    try:
+        with open(STATUS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return _DEFAULT_STATUS.copy()
+
+
+def _is_running() -> bool:
+    return _proc is not None and _proc.poll() is None
 
 
 class ScrapeRequest(BaseModel):
@@ -30,24 +57,33 @@ class ScrapeRequest(BaseModel):
 
 
 @app.post("/api/scrape")
-def start_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks = BackgroundTasks()):
-    if scraper_status["running"]:
+def start_scrape(req: ScrapeRequest):
+    global _proc
+    if _is_running():
         raise HTTPException(status_code=409, detail="Scraper is already running.")
-    background_tasks.add_task(run_scraper, req.keyword, req.date_posted, req.salary_range)
+
+    # Launch as a completely separate Python process — no fork, no threads inherited.
+    # This is identical to running the scraper from the terminal, which works reliably.
+    _proc = subprocess.Popen(
+        [sys.executable, _SCRAPER_SCRIPT, req.keyword, req.date_posted, req.salary_range],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ.copy(),
+        cwd=os.path.dirname(__file__),
+    )
     return {"message": "Scraper started."}
 
 
 @app.get("/api/status")
 def get_status():
-    return scraper_status
+    return _read_status()
 
 
 @app.get("/api/jobs")
 def get_jobs():
     session = Session()
     try:
-        jobs = session.query(Job).order_by(Job.id.desc()).all()
-        return [j.to_dict() for j in jobs]
+        return [j.to_dict() for j in session.query(Job).order_by(Job.id.desc()).all()]
     finally:
         session.close()
 
@@ -85,6 +121,21 @@ def delete_job(job_id: int):
         session.close()
 
 
+@app.get("/api/runs")
+def get_runs():
+    session = Session()
+    try:
+        runs = (
+            session.query(ScraperRun)
+            .order_by(ScraperRun.id.desc())
+            .limit(50)
+            .all()
+        )
+        return [r.to_dict() for r in runs]
+    finally:
+        session.close()
+
+
 @app.get("/api/export/csv")
 def export_csv():
     session = Session()
@@ -92,15 +143,11 @@ def export_csv():
         jobs = session.query(Job).order_by(Job.id.desc()).all()
         if not jobs:
             raise HTTPException(status_code=404, detail="No jobs to export.")
-
-        data = [j.to_dict() for j in jobs]
-        df = pd.DataFrame(data)
+        df = pd.DataFrame([j.to_dict() for j in jobs])
         df.drop(columns=["id"], inplace=True, errors="ignore")
-
         buf = io.StringIO()
         df.to_csv(buf, index=False)
         buf.seek(0)
-
         return StreamingResponse(
             iter([buf.getvalue()]),
             media_type="text/csv",

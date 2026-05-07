@@ -4,10 +4,6 @@ export interface Job {
   id: number;
   job_title: string;
   company_name: string;
-  location_type: string;
-  employment_type: string;
-  skills: string;
-  about_job: string;
   job_url: string;
 }
 
@@ -18,8 +14,22 @@ export interface ScraperStatus {
   scraped: number;
   errors: string[];
   done: boolean;
-  daily_runs: number;
-  daily_date: string;
+  elapsed_seconds?: number;
+  daily_runs?: number;
+  daily_date?: string;
+}
+
+export interface ScraperRun {
+  id: number;
+  keyword: string;
+  started_at: string;
+  finished_at: string;
+  duration_seconds: number;
+  pages_scraped: number;
+  jobs_found: number;
+  jobs_saved: number;
+  error_count: number;
+  run_status: "success" | "partial" | "failed";
 }
 
 export interface ScrapeParams {
@@ -54,6 +64,11 @@ export async function clearJobs(): Promise<{ message?: string; detail?: string }
 
 export async function deleteJob(id: number): Promise<{ message?: string; detail?: string }> {
   const res = await fetch(`${API_BASE}/jobs/${id}`, { method: "DELETE" });
+  return res.json();
+}
+
+export async function getRuns(): Promise<ScraperRun[]> {
+  const res = await fetch(`${API_BASE}/runs`);
   return res.json();
 }
 

@@ -1,30 +1,33 @@
 import os
+import re
+import json
 import time
 import random
 import logging
+import datetime
+import urllib.request
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
-from models import Job, Session, init_db
+
+
+from models import Job, ScraperRun, Session, init_db
 
 load_dotenv()
-
-if not os.environ.get("DISPLAY"):
-    os.environ["DISPLAY"] = ":0"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL")
+LINKEDIN_EMAIL    = os.getenv("LINKEDIN_EMAIL")
 LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD")
+DEBUG_PORT        = 9222          # Chrome must be started with --remote-debugging-port=9222
+STATUS_FILE       = "/tmp/scraper_status.json"
 
 scraper_status = {
     "running": False,
@@ -33,53 +36,157 @@ scraper_status = {
     "scraped": 0,
     "errors": [],
     "done": False,
+    "elapsed_seconds": 0,
+    "daily_runs": 0,
+    "daily_date": "",
 }
+
+_start_time: float = 0.0
+
+
+def _sync_status():
+    if _start_time > 0:
+        scraper_status["elapsed_seconds"] = int(time.time() - _start_time)
+    try:
+        with open(STATUS_FILE, "w") as f:
+            json.dump(scraper_status, f)
+    except Exception:
+        pass
 
 
 def human_delay(min_sec=1.5, max_sec=3.5):
     time.sleep(random.uniform(min_sec, max_sec))
 
 
-def build_driver():
+# ── Driver ────────────────────────────────────────────────────────────────────
+
+def _attach_existing_chrome():
+    """
+    Try to connect to the user's already-open Chrome via remote debugging.
+    Returns (driver, True) on success, (None, False) on failure.
+    The caller must NOT call driver.quit() on an attached browser.
+    """
+    try:
+        urllib.request.urlopen(
+            f"http://localhost:{DEBUG_PORT}/json/version", timeout=2
+        )
+    except Exception:
+        return None, False
+
+    try:
+        options = Options()
+        options.add_experimental_option("debuggerAddress", f"127.0.0.1:{DEBUG_PORT}")
+        driver = webdriver.Chrome(options=options)
+        logger.info("Attached to existing Chrome browser.")
+        return driver, True
+    except Exception as e:
+        logger.warning(f"Found Chrome debug port but could not attach: {e}")
+        return None, False
+
+
+def _start_headless_chrome():
+    """Start a fresh headless Chrome as a fallback."""
     options = Options()
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
+    options.add_argument("--blink-settings=imagesEnabled=false")
     options.add_argument(
         "user-agent=Mozilla/5.0 (X11; Linux x86_64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     )
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # eager = wait for DOM ready only, not images/iframes — prevents renderer timeout
+    options.page_load_strategy = "eager"
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(60)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
+    logger.info("Started new headless Chrome.")
+    return driver, False
+
+
+def build_driver():
+    """
+    Returns (driver, is_attached).
+    is_attached=True  → user's existing browser; do NOT quit it when done.
+    is_attached=False → headless browser we started; quit it when done.
+    """
+    driver, attached = _attach_existing_chrome()
+    if driver:
+        return driver, True
+    logger.info("No existing Chrome on port %d — starting headless.", DEBUG_PORT)
+    return _start_headless_chrome()
+
+
+# ── Field fill (JS native setter – zero key events) ──────────────────────────
+
+def _fill_field(driver, element, text: str):
     driver.execute_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        "var s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
+        "s.call(arguments[0], arguments[1]);"
+        "arguments[0].dispatchEvent(new Event('input',  {bubbles:true}));"
+        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
+        element, text,
     )
-    return driver
+    if element.get_attribute("value") != text:
+        element.click()
+        element.clear()
+        element.send_keys(text)
+
+
+# ── Login (skipped if already logged in) ─────────────────────────────────────
+
+def _already_logged_in(driver) -> bool:
+    """Navigate to LinkedIn feed and check for the nav bar."""
+    try:
+        driver.get("https://www.linkedin.com/feed/")
+        WebDriverWait(driver, 7).until(
+            EC.any_of(
+                EC.presence_of_element_located((By.CLASS_NAME, "global-nav")),
+                EC.url_contains("/feed"),
+            )
+        )
+        return "linkedin.com" in driver.current_url and "login" not in driver.current_url
+    except Exception:
+        return False
 
 
 def linkedin_login(driver):
-    logger.info("Navigating to LinkedIn login page...")
+    scraper_status["progress"] = "Checking LinkedIn session..."
+    _sync_status()
+
+    if _already_logged_in(driver):
+        logger.info("LinkedIn session active — skipping login.")
+        scraper_status["progress"] = "Already logged in. Starting search..."
+        _sync_status()
+        human_delay(1, 2)
+        return
+
+    logger.info("Not logged in — performing login.")
     scraper_status["progress"] = "Logging in to LinkedIn..."
+    _sync_status()
+
     driver.get("https://www.linkedin.com/login")
-    wait = WebDriverWait(driver, 20)
+    wait = WebDriverWait(driver, 25)
 
-    email_field = wait.until(EC.presence_of_element_located((By.ID, "username")))
+    email_field = wait.until(EC.element_to_be_clickable((By.ID, "username")))
     human_delay(1, 2)
-    email_field.clear()
-    email_field.send_keys(LINKEDIN_EMAIL)
+    _fill_field(driver, email_field, LINKEDIN_EMAIL)
+    human_delay(0.8, 1.5)
 
-    human_delay(0.5, 1.5)
-    password_field = driver.find_element(By.ID, "password")
-    password_field.clear()
-    password_field.send_keys(LINKEDIN_PASSWORD)
+    password_field = wait.until(EC.element_to_be_clickable((By.ID, "password")))
+    _fill_field(driver, password_field, LINKEDIN_PASSWORD)
+    human_delay(0.5, 1.2)
 
-    human_delay(0.5, 1.5)
-    password_field.send_keys(Keys.RETURN)
+    try:
+        driver.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
+    except NoSuchElementException:
+        password_field.send_keys(Keys.RETURN)
 
     try:
         wait.until(
@@ -96,321 +203,96 @@ def linkedin_login(driver):
     human_delay(2, 4)
 
 
-def navigate_to_jobs(driver, keyword: str, date_posted: str = "", salary_range: str = ""):
-    logger.info(f"Searching LinkedIn jobs: keyword='{keyword}'")
-    scraper_status["progress"] = f"Searching LinkedIn for '{keyword}'..."
+# ── Job search ────────────────────────────────────────────────────────────────
 
-    params = [
-        f"keywords={quote_plus(keyword)}",
-        "location=United+States",
-        "f_WT=2",
-    ]
+def navigate_to_jobs(driver, keyword: str, date_posted: str = "", salary_range: str = "", start: int = 0):
+    scraper_status["progress"] = f"Searching LinkedIn for '{keyword}'..."
+    _sync_status()
+
+    params = [f"keywords={quote_plus(keyword)}", "location=United+States", "f_WT=2"]
     if date_posted:
         params.append(f"f_TPR={date_posted}")
     if salary_range:
         params.append(f"f_SB2={salary_range}")
+    params.append(f"start={start}")
 
-    url = "https://www.linkedin.com/jobs/search/?" + "&".join(params)
-    logger.info(f"Navigating to: {url}")
-    driver.get(url)
+    driver.get("https://www.linkedin.com/jobs/search/?" + "&".join(params))
     human_delay(3, 5)
 
 
-def collect_job_urls(driver):
-    logger.info("Collecting job card URLs from page 1...")
-    scraper_status["progress"] = "Collecting job listings from page 1..."
-    wait = WebDriverWait(driver, 20)
+def collect_job_cards(driver, seen_ids: set = None):
+    """
+    Extract job cards from LinkedIn's embedded JSON data (in <code> tags).
+    Returns (list_of_new_jobs, total_available_count_or_None).
+    seen_ids is shared across pages to avoid duplicates.
+    """
+    if seen_ids is None:
+        seen_ids = set()
 
-    try:
-        wait.until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "ul.jobs-search__results-list, div.jobs-search-results-list")
-            )
-        )
-    except TimeoutException:
-        logger.warning("Jobs list container not found, trying anyway...")
+    # Let the page settle so the <code> tags are written to the DOM
+    human_delay(4, 6)
 
-    human_delay(2, 3)
+    code_texts: list = driver.execute_script(
+        "return Array.from(document.querySelectorAll('code')).map(c => c.textContent);"
+    ) or []
 
-    for _ in range(5):
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        human_delay(1, 2)
-    driver.execute_script("window.scrollTo(0, 0);")
-    human_delay(1, 2)
+    results = []
+    total_count = None
 
-    selectors = [
-        "a.job-card-list__title--link",
-        "a.job-card-container__link",
-        "div.job-card-container a[href*='/jobs/view/']",
-        "ul.jobs-search__results-list li a[href*='/jobs/view/']",
-        "a[href*='/jobs/view/']",
-    ]
-
-    job_urls = []
-    for selector in selectors:
-        links = driver.find_elements(By.CSS_SELECTOR, selector)
-        for link in links:
-            href = link.get_attribute("href")
-            if href and "/jobs/view/" in href:
-                base = href.split("?")[0].rstrip("/")
-                if base not in job_urls:
-                    job_urls.append(base)
-        if job_urls:
-            break
-
-    logger.info(f"Found {len(job_urls)} job URLs.")
-    return job_urls
-
-
-def extract_text(driver, selectors, attribute=None):
-    for selector in selectors:
+    for raw in code_texts:
         try:
-            el = driver.find_element(By.CSS_SELECTOR, selector)
-            if attribute:
-                return (el.get_attribute(attribute) or "").strip()
-            return el.text.strip()
-        except NoSuchElementException:
+            data = json.loads(raw.strip())
+        except Exception:
             continue
-    return ""
 
+        # Pull total result count from LinkedIn's paging metadata (present on first page)
+        if total_count is None:
+            paging = (data.get("data") or {}).get("paging") or {}
+            if paging.get("total"):
+                total_count = int(paging["total"])
 
-def extract_job_details_fields(driver):
-    result = {
-        "employment_type": "",
-        "location_type": "",
-        "skills": "",
-        "about_job": "",
-    }
-
-    try:
-        details_el = driver.find_element(By.CSS_SELECTOR, "#job-details")
-    except NoSuchElementException:
-        return result
-
-    result["about_job"] = details_el.text.strip()
-
-    label_field_map = {
-        "type": "employment_type",
-        "employment type": "employment_type",
-        "job type": "employment_type",
-        "position type": "employment_type",
-        "location": "location_type",
-        "work location": "location_type",
-        "workplace type": "location_type",
-    }
-
-    try:
-        strongs = details_el.find_elements(By.TAG_NAME, "strong")
-        for strong in strongs:
-            raw_label = strong.text.strip().rstrip(":")
-            label_lower = raw_label.lower()
-            field = label_field_map.get(label_lower)
-            if not field or result[field]:
+        for item in data.get("included", []):
+            urn = item.get("preDashNormalizedJobPostingUrn", "")
+            if not urn:
                 continue
 
-            try:
-                container = strong.find_element(By.XPATH, "ancestor::p[1]")
-            except NoSuchElementException:
-                try:
-                    container = strong.find_element(By.XPATH, "..")
-                except NoSuchElementException:
-                    continue
+            m = re.search(r":(\d+)$", urn)
+            if not m:
+                continue
+            job_id = m.group(1)
+            if job_id in seen_ids:
+                continue
+            seen_ids.add(job_id)
 
-            full_text = container.text.strip()
-            if ":" in full_text:
-                value = full_text.split(":", 1)[1].strip()
-                if value:
-                    result[field] = value
-    except Exception as e:
-        logger.warning(f"DOM extraction of #job-details fields failed: {e}")
+            # blurred=True means LinkedIn is hiding the card (closed / premium-locked)
+            if item.get("blurred"):
+                logger.info(f"Skipping blurred/closed job: {job_id}")
+                continue
 
-    try:
-        skills_header = details_el.find_element(By.CSS_SELECTOR, ".js-skills-header")
-        skills_p = skills_header.find_element(By.XPATH, "following-sibling::p[1]")
-        result["skills"] = skills_p.text.strip()
-    except NoSuchElementException:
-        pass
+            job_title = (item.get("jobPostingTitle") or "").strip()
+            company_name = ((item.get("primaryDescription") or {}).get("text") or "").strip()
 
-    return result
+            if not job_title:
+                continue
+
+            results.append({
+                "job_title": job_title,
+                "company_name": company_name or "N/A",
+                "job_url": f"https://www.linkedin.com/jobs/view/{job_id}",
+            })
+
+    logger.info(f"Found {len(results)} new jobs on this page (total reported: {total_count}).")
+    return results, total_count
 
 
-def scrape_job_detail(driver, job_url, main_handle):
-    driver.execute_script(f"window.open('{job_url}', '_blank');")
-    human_delay(1, 2)
-
-    new_handle = [h for h in driver.window_handles if h != main_handle][-1]
-    driver.switch_to.window(new_handle)
-
-    wait = WebDriverWait(driver, 25)
-    try:
-        wait.until(
-            EC.any_of(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "h1")),
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, ".job-details-jobs-unified-top-card__company-name")
-                ),
-            )
-        )
-    except TimeoutException:
-        logger.warning(f"Timeout loading job page: {job_url}")
-
-    human_delay(2, 3)
-
-    job_title = ""
-    try:
-        title_el = driver.find_element(
-            By.XPATH, "//p[.//svg[@id='verified-medium']]"
-        )
-        job_title = driver.execute_script(
-            "var n=arguments[0].firstChild;"
-            "return n ? n.textContent.trim() : '';",
-            title_el,
-        )
-    except (NoSuchElementException, Exception):
-        pass
-
-    if not job_title:
-        try:
-            title_els = driver.find_elements(
-                By.XPATH,
-                "//div[contains(@class,'job-details-jobs-unified-top-card')]"
-                "//p[not(ancestor::div[@id='job-details'])]",
-            )
-            for el in title_els[:5]:
-                t = driver.execute_script(
-                    "var n=arguments[0].firstChild;"
-                    "return n ? n.textContent.trim() : arguments[0].textContent.trim();",
-                    el,
-                )
-                if t and 3 < len(t) < 200:
-                    job_title = t
-                    break
-        except Exception:
-            pass
-
-    if not job_title:
-        job_title = extract_text(driver, [
-            ".job-details-jobs-unified-top-card__job-title h1",
-            ".job-details-jobs-unified-top-card__job-title",
-            "div.display-flex.justify-space-between.flex-wrap.mt2 h1",
-            ".jobs-unified-top-card__job-title h1",
-            ".jobs-unified-top-card__job-title",
-            "h1.t-24.t-bold",
-            "h1",
-        ])
-
-    company_name = extract_text(driver, [
-        ".job-details-jobs-unified-top-card__company-name a",
-        ".job-details-jobs-unified-top-card__company-name",
-        ".jobs-unified-top-card__company-name a",
-        ".jobs-unified-top-card__company-name",
-        "div.display-flex.align-items-center a.app-aware-link",
-        ".topcard__org-name-link",
-    ])
-
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    human_delay(1, 2)
-    driver.execute_script("window.scrollTo(0, 0);")
-
-    try:
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#job-details")))
-        details_el = driver.find_element(By.CSS_SELECTOR, "#job-details")
-        driver.execute_script("arguments[0].scrollIntoView(true);", details_el)
-        human_delay(1.5, 2.5)
-
-        try:
-            show_more = details_el.find_element(
-                By.CSS_SELECTOR,
-                "button[aria-label*='show more'], button.jobs-description__footer-button, "
-                ".jobs-description__details button",
-            )
-            driver.execute_script("arguments[0].click();", show_more)
-            human_delay(1, 2)
-        except NoSuchElementException:
-            pass
-    except TimeoutException:
-        logger.warning(f"#job-details not found on {job_url}")
-
-    fields = extract_job_details_fields(driver)
-    employment_type = fields["employment_type"]
-    location_type = fields["location_type"]
-    skills = fields["skills"]
-    about_job = fields["about_job"]
-
-    if not employment_type or not location_type:
-        spans = driver.find_elements(
-            By.CSS_SELECTOR,
-            ".jobs-unified-top-card__job-insight span, "
-            ".job-details-jobs-unified-top-card__job-insight span",
-        )
-        remote_kw = {"remote", "hybrid", "on-site", "onsite", "in-person"}
-        time_kw = {"full-time", "part-time", "contract", "internship", "temporary"}
-        for span in spans:
-            txt = span.text.strip()
-            low = txt.lower()
-            if any(kw in low for kw in remote_kw) and not location_type:
-                location_type = txt
-            if any(kw in low for kw in time_kw) and not employment_type:
-                employment_type = txt
-
-    if not employment_type or not location_type:
-        prefs = extract_text(driver, [
-            ".job-details-fit-level-preferences",
-            ".jobs-unified-top-card__workplace-type",
-            ".job-details-jobs-unified-top-card__workplace-type",
-        ])
-        if prefs:
-            remote_kw = {"remote", "hybrid", "on-site", "onsite", "in-person"}
-            time_kw = {"full-time", "part-time", "contract", "internship", "temporary"}
-            for part in [p.strip() for p in prefs.split("\n") if p.strip()]:
-                low = part.lower()
-                if any(kw in low for kw in remote_kw) and not location_type:
-                    location_type = part
-                if any(kw in low for kw in time_kw) and not employment_type:
-                    employment_type = part
-
-    if not about_job:
-        about_job = extract_text(driver, [
-            ".jobs-description-content__text",
-            ".jobs-description__content",
-            ".jobs-description",
-        ])
-
-    driver.close()
-    driver.switch_to.window(main_handle)
-    human_delay(1, 2)
-
-    return {
-        "job_title": job_title or "N/A",
-        "company_name": company_name or "N/A",
-        "location_type": location_type or "N/A",
-        "employment_type": employment_type or "N/A",
-        "skills": skills or "N/A",
-        "about_job": about_job or "N/A",
-        "job_url": job_url,
-    }
-
+# ── Save ──────────────────────────────────────────────────────────────────────
 
 def save_job(data):
     session = Session()
     try:
-        existing = session.query(Job).filter_by(job_url=data["job_url"]).first()
-        if existing:
-            updated = False
-            for field in ("employment_type", "location_type", "skills", "about_job"):
-                new_val = data.get(field, "")
-                old_val = getattr(existing, field, "") or ""
-                if new_val and new_val != "N/A" and (not old_val or old_val == "N/A"):
-                    setattr(existing, field, new_val)
-                    updated = True
-            if updated:
-                session.commit()
-                logger.info(f"Updated: {data['job_title']} @ {data['company_name']}")
-            else:
-                logger.info(f"Skipping duplicate: {data['job_url']}")
+        if session.query(Job).filter_by(job_url=data["job_url"]).first():
             return
-        job = Job(**data)
-        session.add(job)
+        session.add(Job(**data))
         session.commit()
         logger.info(f"Saved: {data['job_title']} @ {data['company_name']}")
     except Exception as e:
@@ -420,45 +302,122 @@ def save_job(data):
         session.close()
 
 
+def save_scraper_run(keyword, started_at, pages_scraped, jobs_found, jobs_saved, error_count, run_status):
+    session = Session()
+    try:
+        finished_at = datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        duration = int(time.time() - _start_time)
+        session.add(ScraperRun(
+            keyword=keyword,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration,
+            pages_scraped=pages_scraped,
+            jobs_found=jobs_found,
+            jobs_saved=jobs_saved,
+            error_count=error_count,
+            run_status=run_status,
+        ))
+        session.commit()
+        logger.info(f"Run record saved: {run_status}, {jobs_saved} jobs in {duration}s")
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to save run record: {e}")
+    finally:
+        session.close()
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
+
 def run_scraper(keyword: str = "AI ML jobs", date_posted: str = "", salary_range: str = ""):
-    global scraper_status
+    global _start_time
+    _start_time = time.time()
+
+    # Preserve and increment today's run counter from the previous status file
+    today = datetime.date.today().isoformat()
+    try:
+        with open(STATUS_FILE) as f:
+            prev = json.load(f)
+        daily_runs = (prev.get("daily_runs", 0) + 1) if prev.get("daily_date") == today else 1
+    except Exception:
+        daily_runs = 1
 
     scraper_status.update({
-        "running": True,
-        "progress": "Starting...",
-        "total": 0,
-        "scraped": 0,
-        "errors": [],
-        "done": False,
+        "running": True, "progress": "Starting...",
+        "total": 0, "scraped": 0, "errors": [], "done": False,
+        "elapsed_seconds": 0,
+        "daily_runs": daily_runs,
+        "daily_date": today,
     })
+    _sync_status()
 
+    started_at = datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"
     init_db()
-    driver = None
+    driver, is_attached = None, False
+
+    PAGE_SIZE = 25       # LinkedIn serves 25 jobs per page
+    MAX_RESULTS = 1000   # LinkedIn hard-caps search results at 1000
+
+    pages_scraped_count = 0
+    run_failed = False
+
     try:
-        driver = build_driver()
+        driver, is_attached = build_driver()
         linkedin_login(driver)
-        navigate_to_jobs(driver, keyword, date_posted, salary_range)
 
-        main_handle = driver.current_window_handle
-        job_urls = collect_job_urls(driver)
+        seen_ids: set = set()
+        all_jobs: list = []
+        start = 0
+        page_num = 1
+        total_available = None
 
-        scraper_status["total"] = len(job_urls)
-        if not job_urls:
-            scraper_status["progress"] = "No jobs found. Check login or search."
-            scraper_status["done"] = True
-            scraper_status["running"] = False
+        while True:
+            scraper_status["progress"] = f"Scraping page {page_num} (start={start})..."
+            _sync_status()
+
+            navigate_to_jobs(driver, keyword, date_posted, salary_range, start=start)
+            page_jobs, page_total = collect_job_cards(driver, seen_ids)
+
+            if total_available is None and page_total:
+                # Cap at LinkedIn's hard limit so we don't loop forever
+                total_available = min(page_total, MAX_RESULTS)
+                logger.info(f"LinkedIn reports {page_total} total results (capped at {total_available}).")
+
+            if not page_jobs:
+                logger.info("No new jobs returned — all pages exhausted.")
+                break
+
+            all_jobs.extend(page_jobs)
+            pages_scraped_count += 1
+            scraper_status["total"] = len(all_jobs)
+            logger.info(f"Page {page_num}: +{len(page_jobs)} jobs | cumulative: {len(all_jobs)}")
+            _sync_status()
+
+            start += PAGE_SIZE
+            page_num += 1
+
+            # Stop when we've requested past the last available result
+            if total_available is not None and start >= total_available:
+                logger.info("Reached end of available results.")
+                break
+
+            human_delay(2, 4)  # polite gap between page requests
+
+        scraper_status["total"] = len(all_jobs)
+        _sync_status()
+
+        if not all_jobs:
+            scraper_status["progress"] = "No jobs found. Check login or search filters."
             return
 
-        for i, url in enumerate(job_urls, 1):
-            scraper_status["progress"] = f"Scraping job {i}/{len(job_urls)}..."
+        for i, job_data in enumerate(all_jobs, 1):
+            scraper_status["progress"] = f"Saving job {i}/{len(all_jobs)}..."
             try:
-                data = scrape_job_detail(driver, url, main_handle)
-                save_job(data)
+                save_job(job_data)
                 scraper_status["scraped"] = i
             except Exception as e:
-                logger.error(f"Error scraping {url}: {e}")
                 scraper_status["errors"].append(str(e))
-            human_delay(1, 2)
+            _sync_status()
 
         scraper_status["progress"] = f"Done! Scraped {scraper_status['scraped']} jobs."
 
@@ -466,8 +425,29 @@ def run_scraper(keyword: str = "AI ML jobs", date_posted: str = "", salary_range
         logger.error(f"Scraper error: {e}")
         scraper_status["progress"] = f"Error: {e}"
         scraper_status["errors"].append(str(e))
+        run_failed = True
     finally:
-        if driver:
+        error_count = len(scraper_status["errors"])
+        if run_failed:
+            run_status = "failed"
+        elif error_count > 0:
+            run_status = "partial"
+        else:
+            run_status = "success"
+
+        save_scraper_run(
+            keyword=keyword,
+            started_at=started_at,
+            pages_scraped=pages_scraped_count,
+            jobs_found=len(all_jobs) if not run_failed else 0,
+            jobs_saved=scraper_status["scraped"],
+            error_count=error_count,
+            run_status=run_status,
+        )
+
+        # Never close the user's existing browser — only quit what we started
+        if driver and not is_attached:
             driver.quit()
         scraper_status["running"] = False
         scraper_status["done"] = True
+        _sync_status()
