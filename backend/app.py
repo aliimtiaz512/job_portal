@@ -8,10 +8,11 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from models import Job, StartupJob, IndeedJob, ScraperRun, Session, init_db
+from models import Job, StartupJob, IndeedJob, DiceJob, ScraperRun, Session, init_db
 from scrapers.linkedin import STATUS_FILE as LINKEDIN_STATUS_FILE
 from scrapers.startupjobs import STATUS_FILE as STARTUPJOBS_STATUS_FILE
 from scrapers.indeed import STATUS_FILE as INDEED_STATUS_FILE
+from scrapers.dice import STATUS_FILE as DICE_STATUS_FILE
 
 app = FastAPI(title="Job Scraper API")
 
@@ -27,13 +28,15 @@ try:
 except Exception as e:
     print(f"[WARNING] DB init failed: {e}")
 
-_LINKEDIN_SCRIPT    = os.path.join(os.path.dirname(__file__), "run_scraper.py")
-_STARTUPJOBS_SCRIPT = os.path.join(os.path.dirname(__file__), "run_startupjobs.py")
-_INDEED_SCRIPT      = os.path.join(os.path.dirname(__file__), "run_indeed.py")
+_LINKEDIN_SCRIPT    = os.path.join(os.path.dirname(__file__), "scrapers", "linkedin",    "runner.py")
+_STARTUPJOBS_SCRIPT = os.path.join(os.path.dirname(__file__), "scrapers", "startupjobs", "runner.py")
+_INDEED_SCRIPT      = os.path.join(os.path.dirname(__file__), "scrapers", "indeed",      "runner.py")
+_DICE_SCRIPT        = os.path.join(os.path.dirname(__file__), "scrapers", "dice",        "runner.py")
 
 _proc_linkedin:    subprocess.Popen | None = None
 _proc_startupjobs: subprocess.Popen | None = None
 _proc_indeed:      subprocess.Popen | None = None
+_proc_dice:        subprocess.Popen | None = None
 
 _DEFAULT_STATUS = {
     "running": False, "progress": "", "total": 0,
@@ -74,6 +77,12 @@ class IndeedScrapeRequest(BaseModel):
     pay: str = ""
     job_type: str = ""
     date_posted: str = ""
+
+
+class DiceScrapeRequest(BaseModel):
+    keyword: str
+    date_posted: str = ""
+    employment_type: str = ""
 
 
 # ── LinkedIn endpoints ────────────────────────────────────────────────────────
@@ -289,6 +298,93 @@ def export_indeed_csv():
             iter([buf.getvalue()]),
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=indeed_jobs.csv"},
+        )
+    finally:
+        session.close()
+
+
+# ── Dice endpoints ───────────────────────────────────────────────────────────
+
+@app.post("/api/scrape/dice")
+def start_dice_scrape(req: DiceScrapeRequest):
+    global _proc_dice
+    if _is_running(_proc_dice):
+        raise HTTPException(status_code=409, detail="Dice scraper is already running.")
+
+    _proc_dice = subprocess.Popen(
+        [sys.executable, _DICE_SCRIPT,
+         req.keyword, req.date_posted, req.employment_type],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ.copy(),
+        cwd=os.path.dirname(__file__),
+    )
+    return {"message": "Dice scraper started."}
+
+
+@app.get("/api/status/dice")
+def get_dice_status():
+    return _read_status(DICE_STATUS_FILE)
+
+
+@app.get("/api/jobs/dice")
+def get_dice_jobs():
+    session = Session()
+    try:
+        return [j.to_dict() for j in session.query(DiceJob).order_by(DiceJob.id.desc()).all()]
+    finally:
+        session.close()
+
+
+@app.delete("/api/jobs/dice/clear")
+def clear_dice_jobs():
+    session = Session()
+    try:
+        session.query(DiceJob).delete()
+        session.commit()
+        return {"message": "All Dice jobs cleared."}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/jobs/dice/{job_id}")
+def delete_dice_job(job_id: int):
+    session = Session()
+    try:
+        job = session.query(DiceJob).filter_by(id=job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        session.delete(job)
+        session.commit()
+        return {"message": "Deleted."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/export/dice/csv")
+def export_dice_csv():
+    session = Session()
+    try:
+        jobs = session.query(DiceJob).order_by(DiceJob.id.desc()).all()
+        if not jobs:
+            raise HTTPException(status_code=404, detail="No Dice jobs to export.")
+        df = pd.DataFrame([j.to_dict() for j in jobs])
+        df.drop(columns=["id"], inplace=True, errors="ignore")
+        buf = io.StringIO()
+        df.to_csv(buf, index=False)
+        buf.seek(0)
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=dice_jobs.csv"},
         )
     finally:
         session.close()

@@ -5,7 +5,7 @@ FastAPI launches this as a subprocess via subprocess.Popen.
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from scrapers.startupjobs import run_startupjobs_scraper
 

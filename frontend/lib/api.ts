@@ -158,6 +158,46 @@ export function exportIndeedCsvUrl(): string {
   return `${API_BASE}/export/indeed/csv`;
 }
 
+// ── Dice ──────────────────────────────────────────────────────────────────────
+
+export type DiceJob = Job;
+
+export interface DiceScrapeParams {
+  keyword: string;
+  date_posted: string;
+  employment_type: string;
+}
+
+export async function startDiceScraper(
+  params: DiceScrapeParams
+): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/scrape/dice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return res.json();
+}
+
+export async function getDiceStatus(): Promise<ScraperStatus> {
+  const res = await fetch(`${API_BASE}/status/dice`);
+  return res.json();
+}
+
+export async function getDiceJobs(): Promise<DiceJob[]> {
+  const res = await fetch(`${API_BASE}/jobs/dice`);
+  return res.json();
+}
+
+export async function clearDiceJobs(): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/jobs/dice/clear`, { method: "DELETE" });
+  return res.json();
+}
+
+export function exportDiceCsvUrl(): string {
+  return `${API_BASE}/export/dice/csv`;
+}
+
 // ── Shared ────────────────────────────────────────────────────────────────────
 
 export async function getRuns(): Promise<ScraperRun[]> {

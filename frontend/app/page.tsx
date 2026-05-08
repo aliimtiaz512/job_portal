@@ -5,31 +5,37 @@ import {
   clearLinkedInJobs,
   clearStartupJobs,
   clearIndeedJobs,
+  clearDiceJobs,
   exportLinkedInCsvUrl,
   exportStartupJobsCsvUrl,
   exportIndeedCsvUrl,
+  exportDiceCsvUrl,
   getLinkedInJobs,
   getLinkedInStatus,
   getStartupJobs,
   getStartupJobsStatus,
   getIndeedJobs,
   getIndeedStatus,
+  getDiceJobs,
+  getDiceStatus,
   getRuns,
   Job,
   StartupJob,
   IndeedJob,
+  DiceJob,
   ScraperRun,
   ScraperStatus,
   startLinkedInScraper,
   startStartupJobsScraper,
   startIndeedScraper,
+  startDiceScraper,
 } from "@/lib/api";
 import StatusBar from "@/components/StatusBar";
 import StatsRow from "@/components/StatsRow";
 import JobsTable from "@/components/JobsTable";
 import RunHistory from "@/components/RunHistory";
 
-type Tab = "linkedin" | "startupjobs" | "indeed";
+type Tab = "linkedin" | "startupjobs" | "indeed" | "dice";
 
 const DEFAULT_STATUS: ScraperStatus = {
   running: false,
@@ -113,6 +119,23 @@ const IN_DATE_OPTIONS = [
   { label: "Last 14 Days",  value: "14" },
 ];
 
+// ── Dice filter options ───────────────────────────────────────────────────────
+
+const DC_DATE_OPTIONS = [
+  { label: "No Preference", value: "" },
+  { label: "Today",         value: "ONE" },
+  { label: "Last 3 Days",   value: "THREE" },
+  { label: "Last 7 Days",   value: "SEVEN" },
+];
+
+const DC_EMPLOYMENT_OPTIONS = [
+  { label: "Full Time",   value: "FULLTIME" },
+  { label: "Part Time",   value: "PARTTIME" },
+  { label: "Contract",    value: "CONTRACTS" },
+  { label: "Third Party", value: "THIRD_PARTY" },
+  { label: "Internship",  value: "INTERN" },
+];
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -122,15 +145,18 @@ export default function Home() {
   const [linkedinJobs, setLinkedinJobs] = useState<Job[]>([]);
   const [startupJobs,  setStartupJobs]  = useState<StartupJob[]>([]);
   const [indeedJobs,   setIndeedJobs]   = useState<IndeedJob[]>([]);
+  const [diceJobs,     setDiceJobs]     = useState<DiceJob[]>([]);
   const [runs,         setRuns]         = useState<ScraperRun[]>([]);
 
   // Status per scraper
   const [liStatus, setLiStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [sjStatus, setSjStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [inStatus, setInStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
+  const [dcStatus, setDcStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [showLiStatus, setShowLiStatus] = useState(false);
   const [showSjStatus, setShowSjStatus] = useState(false);
   const [showInStatus, setShowInStatus] = useState(false);
+  const [showDcStatus, setShowDcStatus] = useState(false);
 
   // LinkedIn form state
   const [liKeyword,    setLiKeyword]    = useState("");
@@ -152,11 +178,18 @@ export default function Home() {
   const [inDate,       setInDate]       = useState("");
   const [inSearch,     setInSearch]     = useState("");
 
+  // Dice form state
+  const [dcKeyword,          setDcKeyword]          = useState("");
+  const [dcDate,             setDcDate]             = useState("");
+  const [dcEmploymentTypes,  setDcEmploymentTypes]  = useState<string[]>([]);
+  const [dcSearch,           setDcSearch]           = useState("");
+
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" | "" } | null>(null);
 
   const liPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sjPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showToast = (msg: string, type: "success" | "error" | "" = "") => {
     setToast({ msg, type });
@@ -175,6 +208,10 @@ export default function Home() {
 
   const loadIndeedJobs = useCallback(async () => {
     try { setIndeedJobs(await getIndeedJobs()); } catch { /* ignore */ }
+  }, []);
+
+  const loadDiceJobs = useCallback(async () => {
+    try { setDiceJobs(await getDiceJobs()); } catch { /* ignore */ }
   }, []);
 
   const loadRuns = useCallback(async () => {
@@ -231,12 +268,29 @@ export default function Home() {
     }, 2000);
   }, [loadIndeedJobs, loadRuns]);
 
+  const startDcPolling = useCallback(() => {
+    if (dcPollRef.current) clearInterval(dcPollRef.current);
+    dcPollRef.current = setInterval(async () => {
+      try {
+        const s = await getDiceStatus();
+        setDcStatus(s);
+        if (s.done) {
+          clearInterval(dcPollRef.current!);
+          dcPollRef.current = null;
+          loadDiceJobs();
+          loadRuns();
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }, [loadDiceJobs, loadRuns]);
+
   // ── Init ──────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     loadLinkedInJobs();
     loadStartupJobs();
     loadIndeedJobs();
+    loadDiceJobs();
     loadRuns();
 
     getLinkedInStatus().then((s) => {
@@ -254,12 +308,19 @@ export default function Home() {
       if (s.running) { setShowInStatus(true); startInPolling(); }
     }).catch(() => {});
 
+    getDiceStatus().then((s) => {
+      setDcStatus(s);
+      if (s.running) { setShowDcStatus(true); startDcPolling(); }
+    }).catch(() => {});
+
     return () => {
       if (liPollRef.current) clearInterval(liPollRef.current);
       if (sjPollRef.current) clearInterval(sjPollRef.current);
       if (inPollRef.current) clearInterval(inPollRef.current);
+      if (dcPollRef.current) clearInterval(dcPollRef.current);
     };
-  }, [loadLinkedInJobs, loadStartupJobs, loadIndeedJobs, loadRuns, startLiPolling, startSjPolling, startInPolling]);
+  }, [loadLinkedInJobs, loadStartupJobs, loadIndeedJobs, loadDiceJobs, loadRuns,
+      startLiPolling, startSjPolling, startInPolling, startDcPolling]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -355,6 +416,42 @@ export default function Home() {
     } catch { showToast("Failed to clear jobs.", "error"); }
   };
 
+  const toggleDcEmploymentType = (value: string) => {
+    setDcEmploymentTypes((prev) =>
+      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
+    );
+  };
+
+  const handleStartDice = async () => {
+    if (!dcKeyword.trim()) {
+      showToast("Please enter a keyword.", "error");
+      return;
+    }
+    try {
+      const res = await startDiceScraper({
+        keyword:         dcKeyword.trim(),
+        date_posted:     dcDate,
+        employment_type: dcEmploymentTypes.join("|"),
+      });
+      if (res.detail) { showToast(String(res.detail), "error"); return; }
+      showToast("Dice scraper started!", "success");
+      setShowDcStatus(true);
+      setDcStatus({ ...DEFAULT_STATUS, running: true, progress: "Starting..." });
+      startDcPolling();
+    } catch {
+      showToast("Cannot reach backend. Is it running on port 8000?", "error");
+    }
+  };
+
+  const handleClearDice = async () => {
+    if (!confirm("Delete all Dice jobs from the database?")) return;
+    try {
+      await clearDiceJobs();
+      showToast("Dice jobs cleared.", "success");
+      setDiceJobs([]);
+    } catch { showToast("Failed to clear jobs.", "error"); }
+  };
+
   // ── Filtered views ────────────────────────────────────────────────────────────
 
   const filteredLinkedin = linkedinJobs.filter((j) => {
@@ -370,6 +467,11 @@ export default function Home() {
   const filteredIndeed = indeedJobs.filter((j) => {
     if (!inSearch) return true;
     return `${j.job_title} ${j.company_name}`.toLowerCase().includes(inSearch.toLowerCase());
+  });
+
+  const filteredDice = diceJobs.filter((j) => {
+    if (!dcSearch) return true;
+    return `${j.job_title} ${j.company_name}`.toLowerCase().includes(dcSearch.toLowerCase());
   });
 
   const SELECT_CLS =
@@ -400,6 +502,7 @@ export default function Home() {
         linkedinJobs={linkedinJobs}
         startupJobs={startupJobs}
         indeedJobs={indeedJobs}
+        diceJobs={diceJobs}
         runs={runs}
       />
 
@@ -437,6 +540,16 @@ export default function Home() {
           }`}
         >
           🔍 Indeed
+        </button>
+        <button
+          onClick={() => setActiveTab("dice")}
+          className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-colors border-2 ${
+            activeTab === "dice"
+              ? "bg-teal-600 border-teal-600 text-white shadow-md"
+              : "bg-white border-gray-200 text-gray-600 hover:border-teal-300"
+          }`}
+        >
+          🎲 Dice
         </button>
       </div>
 
@@ -650,6 +763,92 @@ export default function Home() {
           </div>
 
           <JobsTable jobs={filteredIndeed} />
+        </>
+      )}
+
+      {/* ── Dice Tab ─────────────────────────────────────────────────────────── */}
+      {activeTab === "dice" && (
+        <>
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-7 mb-6">
+            <h2 className="text-sm font-black text-gray-500 uppercase tracking-widest mb-5">Dice Search</h2>
+
+            <div className="flex gap-3 mb-5">
+              <div className="relative flex-1">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-lg">🔍</span>
+                <input
+                  type="text"
+                  placeholder="Job title, skills, or keywords..."
+                  value={dcKeyword}
+                  onChange={(e) => setDcKeyword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !dcStatus.running && handleStartDice()}
+                  className="w-full pl-11 pr-5 py-3.5 border-2 border-gray-200 focus:border-teal-500 rounded-xl text-base font-semibold bg-gray-50 focus:bg-white focus:outline-none transition-colors"
+                />
+              </div>
+              <button
+                onClick={handleStartDice}
+                disabled={dcStatus.running}
+                className="flex items-center gap-2 px-7 py-3.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors shadow-sm text-base whitespace-nowrap"
+              >
+                {dcStatus.running ? <><span className="animate-spin">⧖</span> Running...</> : <><span>▶</span> Start Scraper</>}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-start gap-6 mb-5">
+              <div className="flex flex-col gap-1.5 min-w-[180px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Date Posted</label>
+                <select value={dcDate} onChange={(e) => setDcDate(e.target.value)} className={SELECT_CLS}>
+                  {DC_DATE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Employment Type</label>
+                <div className="flex flex-wrap gap-2">
+                  {DC_EMPLOYMENT_OPTIONS.map((o) => (
+                    <label
+                      key={o.value}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 cursor-pointer text-sm font-bold transition-colors select-none ${
+                        dcEmploymentTypes.includes(o.value)
+                          ? "bg-teal-600 border-teal-600 text-white"
+                          : "bg-gray-50 border-gray-200 text-gray-600 hover:border-teal-400"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="sr-only"
+                        checked={dcEmploymentTypes.includes(o.value)}
+                        onChange={() => toggleDcEmploymentType(o.value)}
+                      />
+                      {o.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 ml-auto flex-wrap self-end">
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-xl text-sm font-bold">📍 United States</span>
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-sm font-bold">🏠 Remote</span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mt-5 pt-5 border-t border-gray-100">
+              <button onClick={() => window.open(exportDiceCsvUrl(), "_blank")} className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors text-sm shadow-sm">⬇ Export CSV</button>
+              <button onClick={loadDiceJobs} className="flex items-center gap-2 px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors text-sm">↻ Refresh</button>
+              <button onClick={handleClearDice} className="flex items-center gap-2 px-5 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-xl border border-red-200 hover:border-red-300 transition-colors text-sm">✕ Clear All</button>
+            </div>
+
+            {showDcStatus && <StatusBar status={dcStatus} />}
+          </div>
+
+          <div className="flex items-center gap-3 mb-5">
+            <div className="relative flex-1 max-w-md">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">🔎</span>
+              <input type="text" placeholder="Filter by title or company..." value={dcSearch} onChange={(e) => setDcSearch(e.target.value)} className="w-full pl-11 pr-5 py-3 border-2 border-gray-200 rounded-xl text-base font-semibold bg-white focus:outline-none focus:border-teal-500 transition-colors" />
+            </div>
+            <span className="text-base font-bold text-gray-500">{filteredDice.length} of {diceJobs.length} jobs</span>
+          </div>
+
+          <JobsTable jobs={filteredDice} />
         </>
       )}
 
