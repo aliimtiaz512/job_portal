@@ -90,9 +90,7 @@ class DiceScrapeRequest(BaseModel):
 
 class AdzunaScrapeRequest(BaseModel):
     keyword: str
-    location: str = ""
     max_days_old: str = ""
-    contract_type: str = ""
 
 
 # ── LinkedIn endpoints ────────────────────────────────────────────────────────
@@ -410,7 +408,7 @@ def start_adzuna_scrape(req: AdzunaScrapeRequest):
 
     _proc_adzuna = subprocess.Popen(
         [sys.executable, _ADZUNA_SCRIPT,
-         req.keyword, req.location, req.max_days_old, req.contract_type],
+         req.keyword, req.max_days_old],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env=os.environ.copy(),

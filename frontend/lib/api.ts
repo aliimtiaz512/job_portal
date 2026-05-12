@@ -204,9 +204,7 @@ export type AdzunaJob = Job;
 
 export interface AdzunaScrapeParams {
   keyword: string;
-  location: string;
   max_days_old: string;
-  contract_type: string;
 }
 
 export async function startAdzunaScraper(

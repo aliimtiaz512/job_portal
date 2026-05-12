@@ -151,12 +151,6 @@ const AZ_MAX_DAYS_OPTIONS = [
   { label: "Last 30 Days",  value: "30" },
 ];
 
-const AZ_CONTRACT_OPTIONS = [
-  { label: "Any Type",  value: "" },
-  { label: "Permanent", value: "permanent" },
-  { label: "Contract",  value: "contract" },
-];
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -210,9 +204,7 @@ export default function Home() {
 
   // Adzuna form state
   const [azKeyword,       setAzKeyword]       = useState("");
-  const [azLocation,      setAzLocation]      = useState("");
   const [azMaxDays,       setAzMaxDays]       = useState("");
-  const [azContractType,  setAzContractType]  = useState("");
   const [azSearch,        setAzSearch]        = useState("");
 
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" | "" } | null>(null);
@@ -518,10 +510,8 @@ export default function Home() {
     }
     try {
       const res = await startAdzunaScraper({
-        keyword:       azKeyword.trim(),
-        location:      azLocation.trim(),
-        max_days_old:  azMaxDays,
-        contract_type: azContractType,
+        keyword:      azKeyword.trim(),
+        max_days_old: azMaxDays,
       });
       if (res.detail) { showToast(String(res.detail), "error"); return; }
       showToast("Adzuna scraper started!", "success");
@@ -986,31 +976,15 @@ export default function Home() {
             </div>
 
             <div className="flex flex-wrap items-center gap-4">
-              <div className="flex flex-col gap-1.5 min-w-[200px]">
-                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Location</label>
-                <input
-                  type="text"
-                  placeholder="e.g. New York, Remote..."
-                  value={azLocation}
-                  onChange={(e) => setAzLocation(e.target.value)}
-                  className="px-4 py-3 border-2 border-gray-200 focus:border-amber-500 rounded-xl text-base font-bold bg-gray-50 focus:bg-white focus:outline-none transition-colors"
-                />
-              </div>
               <div className="flex flex-col gap-1.5 min-w-[160px]">
                 <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Date Posted</label>
                 <select value={azMaxDays} onChange={(e) => setAzMaxDays(e.target.value)} className={SELECT_CLS}>
                   {AZ_MAX_DAYS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
-              <div className="flex flex-col gap-1.5 min-w-[160px]">
-                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Contract Type</label>
-                <select value={azContractType} onChange={(e) => setAzContractType(e.target.value)} className={SELECT_CLS}>
-                  {AZ_CONTRACT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              </div>
               <div className="flex items-center gap-2 ml-auto flex-wrap">
                 <span className="flex items-center gap-2 px-4 py-2.5 bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-xl text-sm font-bold">📍 United States</span>
-                <span className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-sm font-bold">⚡ REST API</span>
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-sm font-bold">🏠 Remote</span>
               </div>
             </div>
 

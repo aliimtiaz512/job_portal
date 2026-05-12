@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 STATUS_FILE = "/tmp/scraper_status_adzuna.json"
 
 RESULTS_PER_PAGE = 50
-MAX_PAGES = 20  # 20 × 50 = up to 1 000 results
+MAX_PAGES = 25  # 25 × 50 = up to 1 250 results
 
 scraper_status = {
     "running": False,
@@ -96,9 +96,7 @@ def _save_scraper_run(
 
 def run_adzuna_scraper(
     keyword: str = "Software Engineer",
-    location: str = "",
     max_days_old: str = "",
-    contract_type: str = "",
 ) -> None:
     global _start_time
     _start_time = time.time()
@@ -151,12 +149,8 @@ def run_adzuna_scraper(
                 "what": keyword,
                 "results_per_page": RESULTS_PER_PAGE,
             }
-            if location:
-                params["where"] = location
             if max_days_old:
                 params["max_days_old"] = max_days_old
-            if contract_type:
-                params["contract_type"] = contract_type
 
             try:
                 resp = requests.get(
