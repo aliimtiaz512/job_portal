@@ -8,11 +8,12 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from models import Job, StartupJob, IndeedJob, DiceJob, ScraperRun, Session, init_db
+from models import Job, StartupJob, IndeedJob, DiceJob, AdzunaJob, ScraperRun, Session, init_db
 from scrapers.linkedin import STATUS_FILE as LINKEDIN_STATUS_FILE
 from scrapers.startupjobs import STATUS_FILE as STARTUPJOBS_STATUS_FILE
 from scrapers.indeed import STATUS_FILE as INDEED_STATUS_FILE
 from scrapers.dice import STATUS_FILE as DICE_STATUS_FILE
+from scrapers.adzuna import STATUS_FILE as ADZUNA_STATUS_FILE
 
 app = FastAPI(title="Job Scraper API")
 
@@ -32,11 +33,13 @@ _LINKEDIN_SCRIPT    = os.path.join(os.path.dirname(__file__), "scrapers", "linke
 _STARTUPJOBS_SCRIPT = os.path.join(os.path.dirname(__file__), "scrapers", "startupjobs", "runner.py")
 _INDEED_SCRIPT      = os.path.join(os.path.dirname(__file__), "scrapers", "indeed",      "runner.py")
 _DICE_SCRIPT        = os.path.join(os.path.dirname(__file__), "scrapers", "dice",        "runner.py")
+_ADZUNA_SCRIPT      = os.path.join(os.path.dirname(__file__), "scrapers", "adzuna",      "runner.py")
 
 _proc_linkedin:    subprocess.Popen | None = None
 _proc_startupjobs: subprocess.Popen | None = None
 _proc_indeed:      subprocess.Popen | None = None
 _proc_dice:        subprocess.Popen | None = None
+_proc_adzuna:      subprocess.Popen | None = None
 
 _DEFAULT_STATUS = {
     "running": False, "progress": "", "total": 0,
@@ -83,6 +86,13 @@ class DiceScrapeRequest(BaseModel):
     keyword: str
     date_posted: str = ""
     employment_type: str = ""
+
+
+class AdzunaScrapeRequest(BaseModel):
+    keyword: str
+    location: str = ""
+    max_days_old: str = ""
+    contract_type: str = ""
 
 
 # ── LinkedIn endpoints ────────────────────────────────────────────────────────
@@ -385,6 +395,93 @@ def export_dice_csv():
             iter([buf.getvalue()]),
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=dice_jobs.csv"},
+        )
+    finally:
+        session.close()
+
+
+# ── Adzuna endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/api/scrape/adzuna")
+def start_adzuna_scrape(req: AdzunaScrapeRequest):
+    global _proc_adzuna
+    if _is_running(_proc_adzuna):
+        raise HTTPException(status_code=409, detail="Adzuna scraper is already running.")
+
+    _proc_adzuna = subprocess.Popen(
+        [sys.executable, _ADZUNA_SCRIPT,
+         req.keyword, req.location, req.max_days_old, req.contract_type],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ.copy(),
+        cwd=os.path.dirname(__file__),
+    )
+    return {"message": "Adzuna scraper started."}
+
+
+@app.get("/api/status/adzuna")
+def get_adzuna_status():
+    return _read_status(ADZUNA_STATUS_FILE)
+
+
+@app.get("/api/jobs/adzuna")
+def get_adzuna_jobs():
+    session = Session()
+    try:
+        return [j.to_dict() for j in session.query(AdzunaJob).order_by(AdzunaJob.id.desc()).all()]
+    finally:
+        session.close()
+
+
+@app.delete("/api/jobs/adzuna/clear")
+def clear_adzuna_jobs():
+    session = Session()
+    try:
+        session.query(AdzunaJob).delete()
+        session.commit()
+        return {"message": "All Adzuna jobs cleared."}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/jobs/adzuna/{job_id}")
+def delete_adzuna_job(job_id: int):
+    session = Session()
+    try:
+        job = session.query(AdzunaJob).filter_by(id=job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        session.delete(job)
+        session.commit()
+        return {"message": "Deleted."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/export/adzuna/csv")
+def export_adzuna_csv():
+    session = Session()
+    try:
+        jobs = session.query(AdzunaJob).order_by(AdzunaJob.id.desc()).all()
+        if not jobs:
+            raise HTTPException(status_code=404, detail="No Adzuna jobs to export.")
+        df = pd.DataFrame([j.to_dict() for j in jobs])
+        df.drop(columns=["id"], inplace=True, errors="ignore")
+        buf = io.StringIO()
+        df.to_csv(buf, index=False)
+        buf.seek(0)
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=adzuna_jobs.csv"},
         )
     finally:
         session.close()

@@ -7,3 +7,4 @@ python-dotenv
 selenium
 pandas
 webdriver-manager
+requests

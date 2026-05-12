@@ -6,10 +6,12 @@ import {
   clearStartupJobs,
   clearIndeedJobs,
   clearDiceJobs,
+  clearAdzunaJobs,
   exportLinkedInCsvUrl,
   exportStartupJobsCsvUrl,
   exportIndeedCsvUrl,
   exportDiceCsvUrl,
+  exportAdzunaCsvUrl,
   getLinkedInJobs,
   getLinkedInStatus,
   getStartupJobs,
@@ -18,24 +20,28 @@ import {
   getIndeedStatus,
   getDiceJobs,
   getDiceStatus,
+  getAdzunaJobs,
+  getAdzunaStatus,
   getRuns,
   Job,
   StartupJob,
   IndeedJob,
   DiceJob,
+  AdzunaJob,
   ScraperRun,
   ScraperStatus,
   startLinkedInScraper,
   startStartupJobsScraper,
   startIndeedScraper,
   startDiceScraper,
+  startAdzunaScraper,
 } from "@/lib/api";
 import StatusBar from "@/components/StatusBar";
 import StatsRow from "@/components/StatsRow";
 import JobsTable from "@/components/JobsTable";
 import RunHistory from "@/components/RunHistory";
 
-type Tab = "linkedin" | "startupjobs" | "indeed" | "dice";
+type Tab = "linkedin" | "startupjobs" | "indeed" | "dice" | "adzuna";
 
 const DEFAULT_STATUS: ScraperStatus = {
   running: false,
@@ -136,6 +142,21 @@ const DC_EMPLOYMENT_OPTIONS = [
   { label: "Internship",  value: "INTERN" },
 ];
 
+// ── Adzuna filter options ─────────────────────────────────────────────────────
+
+const AZ_MAX_DAYS_OPTIONS = [
+  { label: "Any Time",      value: "" },
+  { label: "Last 24 Hours", value: "1" },
+  { label: "Last 7 Days",   value: "7" },
+  { label: "Last 30 Days",  value: "30" },
+];
+
+const AZ_CONTRACT_OPTIONS = [
+  { label: "Any Type",  value: "" },
+  { label: "Permanent", value: "permanent" },
+  { label: "Contract",  value: "contract" },
+];
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -146,6 +167,7 @@ export default function Home() {
   const [startupJobs,  setStartupJobs]  = useState<StartupJob[]>([]);
   const [indeedJobs,   setIndeedJobs]   = useState<IndeedJob[]>([]);
   const [diceJobs,     setDiceJobs]     = useState<DiceJob[]>([]);
+  const [adzunaJobs,   setAdzunaJobs]   = useState<AdzunaJob[]>([]);
   const [runs,         setRuns]         = useState<ScraperRun[]>([]);
 
   // Status per scraper
@@ -153,10 +175,12 @@ export default function Home() {
   const [sjStatus, setSjStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [inStatus, setInStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [dcStatus, setDcStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
+  const [azStatus, setAzStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [showLiStatus, setShowLiStatus] = useState(false);
   const [showSjStatus, setShowSjStatus] = useState(false);
   const [showInStatus, setShowInStatus] = useState(false);
   const [showDcStatus, setShowDcStatus] = useState(false);
+  const [showAzStatus, setShowAzStatus] = useState(false);
 
   // LinkedIn form state
   const [liKeyword,    setLiKeyword]    = useState("");
@@ -184,12 +208,20 @@ export default function Home() {
   const [dcEmploymentTypes,  setDcEmploymentTypes]  = useState<string[]>([]);
   const [dcSearch,           setDcSearch]           = useState("");
 
+  // Adzuna form state
+  const [azKeyword,       setAzKeyword]       = useState("");
+  const [azLocation,      setAzLocation]      = useState("");
+  const [azMaxDays,       setAzMaxDays]       = useState("");
+  const [azContractType,  setAzContractType]  = useState("");
+  const [azSearch,        setAzSearch]        = useState("");
+
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" | "" } | null>(null);
 
   const liPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sjPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const azPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showToast = (msg: string, type: "success" | "error" | "" = "") => {
     setToast({ msg, type });
@@ -212,6 +244,10 @@ export default function Home() {
 
   const loadDiceJobs = useCallback(async () => {
     try { setDiceJobs(await getDiceJobs()); } catch { /* ignore */ }
+  }, []);
+
+  const loadAdzunaJobs = useCallback(async () => {
+    try { setAdzunaJobs(await getAdzunaJobs()); } catch { /* ignore */ }
   }, []);
 
   const loadRuns = useCallback(async () => {
@@ -284,6 +320,22 @@ export default function Home() {
     }, 2000);
   }, [loadDiceJobs, loadRuns]);
 
+  const startAzPolling = useCallback(() => {
+    if (azPollRef.current) clearInterval(azPollRef.current);
+    azPollRef.current = setInterval(async () => {
+      try {
+        const s = await getAdzunaStatus();
+        setAzStatus(s);
+        if (s.done) {
+          clearInterval(azPollRef.current!);
+          azPollRef.current = null;
+          loadAdzunaJobs();
+          loadRuns();
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }, [loadAdzunaJobs, loadRuns]);
+
   // ── Init ──────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -291,6 +343,7 @@ export default function Home() {
     loadStartupJobs();
     loadIndeedJobs();
     loadDiceJobs();
+    loadAdzunaJobs();
     loadRuns();
 
     getLinkedInStatus().then((s) => {
@@ -313,14 +366,20 @@ export default function Home() {
       if (s.running) { setShowDcStatus(true); startDcPolling(); }
     }).catch(() => {});
 
+    getAdzunaStatus().then((s) => {
+      setAzStatus(s);
+      if (s.running) { setShowAzStatus(true); startAzPolling(); }
+    }).catch(() => {});
+
     return () => {
       if (liPollRef.current) clearInterval(liPollRef.current);
       if (sjPollRef.current) clearInterval(sjPollRef.current);
       if (inPollRef.current) clearInterval(inPollRef.current);
       if (dcPollRef.current) clearInterval(dcPollRef.current);
+      if (azPollRef.current) clearInterval(azPollRef.current);
     };
-  }, [loadLinkedInJobs, loadStartupJobs, loadIndeedJobs, loadDiceJobs, loadRuns,
-      startLiPolling, startSjPolling, startInPolling, startDcPolling]);
+  }, [loadLinkedInJobs, loadStartupJobs, loadIndeedJobs, loadDiceJobs, loadAdzunaJobs, loadRuns,
+      startLiPolling, startSjPolling, startInPolling, startDcPolling, startAzPolling]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -452,6 +511,37 @@ export default function Home() {
     } catch { showToast("Failed to clear jobs.", "error"); }
   };
 
+  const handleStartAdzuna = async () => {
+    if (!azKeyword.trim()) {
+      showToast("Please enter a keyword.", "error");
+      return;
+    }
+    try {
+      const res = await startAdzunaScraper({
+        keyword:       azKeyword.trim(),
+        location:      azLocation.trim(),
+        max_days_old:  azMaxDays,
+        contract_type: azContractType,
+      });
+      if (res.detail) { showToast(String(res.detail), "error"); return; }
+      showToast("Adzuna scraper started!", "success");
+      setShowAzStatus(true);
+      setAzStatus({ ...DEFAULT_STATUS, running: true, progress: "Starting..." });
+      startAzPolling();
+    } catch {
+      showToast("Cannot reach backend. Is it running on port 8000?", "error");
+    }
+  };
+
+  const handleClearAdzuna = async () => {
+    if (!confirm("Delete all Adzuna jobs from the database?")) return;
+    try {
+      await clearAdzunaJobs();
+      showToast("Adzuna jobs cleared.", "success");
+      setAdzunaJobs([]);
+    } catch { showToast("Failed to clear jobs.", "error"); }
+  };
+
   // ── Filtered views ────────────────────────────────────────────────────────────
 
   const filteredLinkedin = linkedinJobs.filter((j) => {
@@ -472,6 +562,11 @@ export default function Home() {
   const filteredDice = diceJobs.filter((j) => {
     if (!dcSearch) return true;
     return `${j.job_title} ${j.company_name}`.toLowerCase().includes(dcSearch.toLowerCase());
+  });
+
+  const filteredAdzuna = adzunaJobs.filter((j) => {
+    if (!azSearch) return true;
+    return `${j.job_title} ${j.company_name}`.toLowerCase().includes(azSearch.toLowerCase());
   });
 
   const SELECT_CLS =
@@ -503,6 +598,7 @@ export default function Home() {
         startupJobs={startupJobs}
         indeedJobs={indeedJobs}
         diceJobs={diceJobs}
+        adzunaJobs={adzunaJobs}
         runs={runs}
       />
 
@@ -550,6 +646,16 @@ export default function Home() {
           }`}
         >
           🎲 Dice
+        </button>
+        <button
+          onClick={() => setActiveTab("adzuna")}
+          className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-colors border-2 ${
+            activeTab === "adzuna"
+              ? "bg-amber-500 border-amber-500 text-white shadow-md"
+              : "bg-white border-gray-200 text-gray-600 hover:border-amber-300"
+          }`}
+        >
+          ⚡ Adzuna
         </button>
       </div>
 
@@ -849,6 +955,83 @@ export default function Home() {
           </div>
 
           <JobsTable jobs={filteredDice} />
+        </>
+      )}
+
+      {/* ── Adzuna Tab ───────────────────────────────────────────────────────── */}
+      {activeTab === "adzuna" && (
+        <>
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-7 mb-6">
+            <h2 className="text-sm font-black text-gray-500 uppercase tracking-widest mb-5">Adzuna Search</h2>
+
+            <div className="flex gap-3 mb-5">
+              <div className="relative flex-1">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-lg">🔍</span>
+                <input
+                  type="text"
+                  placeholder="Job title, skills, or keywords..."
+                  value={azKeyword}
+                  onChange={(e) => setAzKeyword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !azStatus.running && handleStartAdzuna()}
+                  className="w-full pl-11 pr-5 py-3.5 border-2 border-gray-200 focus:border-amber-500 rounded-xl text-base font-semibold bg-gray-50 focus:bg-white focus:outline-none transition-colors"
+                />
+              </div>
+              <button
+                onClick={handleStartAdzuna}
+                disabled={azStatus.running}
+                className="flex items-center gap-2 px-7 py-3.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors shadow-sm text-base whitespace-nowrap"
+              >
+                {azStatus.running ? <><span className="animate-spin">⧖</span> Running...</> : <><span>▶</span> Start Scraper</>}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-col gap-1.5 min-w-[200px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Location</label>
+                <input
+                  type="text"
+                  placeholder="e.g. New York, Remote..."
+                  value={azLocation}
+                  onChange={(e) => setAzLocation(e.target.value)}
+                  className="px-4 py-3 border-2 border-gray-200 focus:border-amber-500 rounded-xl text-base font-bold bg-gray-50 focus:bg-white focus:outline-none transition-colors"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5 min-w-[160px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Date Posted</label>
+                <select value={azMaxDays} onChange={(e) => setAzMaxDays(e.target.value)} className={SELECT_CLS}>
+                  {AZ_MAX_DAYS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5 min-w-[160px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Contract Type</label>
+                <select value={azContractType} onChange={(e) => setAzContractType(e.target.value)} className={SELECT_CLS}>
+                  {AZ_CONTRACT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 ml-auto flex-wrap">
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-xl text-sm font-bold">📍 United States</span>
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-sm font-bold">⚡ REST API</span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mt-5 pt-5 border-t border-gray-100">
+              <button onClick={() => window.open(exportAdzunaCsvUrl(), "_blank")} className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors text-sm shadow-sm">⬇ Export CSV</button>
+              <button onClick={loadAdzunaJobs} className="flex items-center gap-2 px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors text-sm">↻ Refresh</button>
+              <button onClick={handleClearAdzuna} className="flex items-center gap-2 px-5 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-xl border border-red-200 hover:border-red-300 transition-colors text-sm">✕ Clear All</button>
+            </div>
+
+            {showAzStatus && <StatusBar status={azStatus} />}
+          </div>
+
+          <div className="flex items-center gap-3 mb-5">
+            <div className="relative flex-1 max-w-md">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">🔎</span>
+              <input type="text" placeholder="Filter by title or company..." value={azSearch} onChange={(e) => setAzSearch(e.target.value)} className="w-full pl-11 pr-5 py-3 border-2 border-gray-200 rounded-xl text-base font-semibold bg-white focus:outline-none focus:border-amber-500 transition-colors" />
+            </div>
+            <span className="text-base font-bold text-gray-500">{filteredAdzuna.length} of {adzunaJobs.length} jobs</span>
+          </div>
+
+          <JobsTable jobs={filteredAdzuna} />
         </>
       )}
 

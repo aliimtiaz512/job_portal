@@ -198,6 +198,47 @@ export function exportDiceCsvUrl(): string {
   return `${API_BASE}/export/dice/csv`;
 }
 
+// ── Adzuna ────────────────────────────────────────────────────────────────────
+
+export type AdzunaJob = Job;
+
+export interface AdzunaScrapeParams {
+  keyword: string;
+  location: string;
+  max_days_old: string;
+  contract_type: string;
+}
+
+export async function startAdzunaScraper(
+  params: AdzunaScrapeParams
+): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/scrape/adzuna`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return res.json();
+}
+
+export async function getAdzunaStatus(): Promise<ScraperStatus> {
+  const res = await fetch(`${API_BASE}/status/adzuna`);
+  return res.json();
+}
+
+export async function getAdzunaJobs(): Promise<AdzunaJob[]> {
+  const res = await fetch(`${API_BASE}/jobs/adzuna`);
+  return res.json();
+}
+
+export async function clearAdzunaJobs(): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/jobs/adzuna/clear`, { method: "DELETE" });
+  return res.json();
+}
+
+export function exportAdzunaCsvUrl(): string {
+  return `${API_BASE}/export/adzuna/csv`;
+}
+
 // ── Shared ────────────────────────────────────────────────────────────────────
 
 export async function getRuns(): Promise<ScraperRun[]> {
