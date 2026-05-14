@@ -100,6 +100,23 @@ class AdzunaJob(Base):
         }
 
 
+class ZipRecruiterJob(Base):
+    __tablename__ = "ziprecruiter_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_title = Column(String(500))
+    company_name = Column(String(500))
+    job_url = Column(String(1000), unique=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "job_title": self.job_title,
+            "company_name": self.company_name,
+            "job_url": self.job_url,
+        }
+
+
 class ScraperRun(Base):
     __tablename__ = "scraper_runs"
 

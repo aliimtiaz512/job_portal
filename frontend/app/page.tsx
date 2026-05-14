@@ -7,11 +7,13 @@ import {
   clearIndeedJobs,
   clearDiceJobs,
   clearAdzunaJobs,
+  clearZipRecruiterJobs,
   exportLinkedInCsvUrl,
   exportStartupJobsCsvUrl,
   exportIndeedCsvUrl,
   exportDiceCsvUrl,
   exportAdzunaCsvUrl,
+  exportZipRecruiterCsvUrl,
   getLinkedInJobs,
   getLinkedInStatus,
   getStartupJobs,
@@ -22,12 +24,15 @@ import {
   getDiceStatus,
   getAdzunaJobs,
   getAdzunaStatus,
+  getZipRecruiterJobs,
+  getZipRecruiterStatus,
   getRuns,
   Job,
   StartupJob,
   IndeedJob,
   DiceJob,
   AdzunaJob,
+  ZipRecruiterJob,
   ScraperRun,
   ScraperStatus,
   startLinkedInScraper,
@@ -35,13 +40,14 @@ import {
   startIndeedScraper,
   startDiceScraper,
   startAdzunaScraper,
+  startZipRecruiterScraper,
 } from "@/lib/api";
 import StatusBar from "@/components/StatusBar";
 import StatsRow from "@/components/StatsRow";
 import JobsTable from "@/components/JobsTable";
 import RunHistory from "@/components/RunHistory";
 
-type Tab = "linkedin" | "startupjobs" | "indeed" | "dice" | "adzuna";
+type Tab = "linkedin" | "startupjobs" | "indeed" | "dice" | "adzuna" | "ziprecruiter";
 
 const DEFAULT_STATUS: ScraperStatus = {
   running: false,
@@ -151,6 +157,43 @@ const AZ_MAX_DAYS_OPTIONS = [
   { label: "Last 30 Days",  value: "30" },
 ];
 
+// ── ZipRecruiter filter options ─────────────────────────────────────────────
+
+const ZR_DATE_OPTIONS = [
+  { label: "Any Time",      value: "" },
+  { label: "Posted Anytime", value: "anytime" },
+  { label: "Within 30 Days", value: "30" },
+  { label: "Within 10 Days", value: "10" },
+  { label: "Within 5 Days",  value: "5" },
+  { label: "Within 1 Day",    value: "1" },
+];
+
+const ZR_SALARY_OPTIONS = [
+  { label: "Any Salary",  value: "" },
+  { label: "$120+",   value: "120" },
+  { label: "$150+",   value: "150" },
+  { label: "$200+",   value: "200" },
+  { label: "$250+",   value: "250" },
+  { label: "$300+",   value: "300" },
+];
+
+const ZR_EMPLOYMENT_OPTIONS = [
+  { label: "All Employment Types", value: "" },
+  { label: "Full Time",   value: "fulltime" },
+  { label: "Part Time",  value: "parttime" },
+  { label: "Contract",   value: "contract" },
+  { label: "Per Diem",   value: "perdiem" },
+  { label: "Temporary",  value: "temporary" },
+];
+
+const ZR_EXPERIENCE_OPTIONS = [
+  { label: "Any Level",           value: "" },
+  { label: "No Experience Needed", value: "noexperience" },
+  { label: "Junior Level",        value: "junior" },
+  { label: "Mid Level",          value: "mid" },
+  { label: "Senior Level+",      value: "senior" },
+];
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -162,6 +205,7 @@ export default function Home() {
   const [indeedJobs,   setIndeedJobs]   = useState<IndeedJob[]>([]);
   const [diceJobs,     setDiceJobs]     = useState<DiceJob[]>([]);
   const [adzunaJobs,   setAdzunaJobs]   = useState<AdzunaJob[]>([]);
+  const [ziprecruiterJobs, setZiprecruiterJobs] = useState<ZipRecruiterJob[]>([]);
   const [runs,         setRuns]         = useState<ScraperRun[]>([]);
 
   // Status per scraper
@@ -170,11 +214,13 @@ export default function Home() {
   const [inStatus, setInStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [dcStatus, setDcStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [azStatus, setAzStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
+  const [zrStatus, setZrStatus] = useState<ScraperStatus>(DEFAULT_STATUS);
   const [showLiStatus, setShowLiStatus] = useState(false);
   const [showSjStatus, setShowSjStatus] = useState(false);
   const [showInStatus, setShowInStatus] = useState(false);
   const [showDcStatus, setShowDcStatus] = useState(false);
   const [showAzStatus, setShowAzStatus] = useState(false);
+  const [showZrStatus, setShowZrStatus] = useState(false);
 
   // LinkedIn form state
   const [liKeyword,    setLiKeyword]    = useState("");
@@ -207,6 +253,14 @@ export default function Home() {
   const [azMaxDays,       setAzMaxDays]       = useState("");
   const [azSearch,        setAzSearch]        = useState("");
 
+  // ZipRecruiter form state
+  const [zrKeyword,       setZrKeyword]       = useState("");
+  const [zrDate,          setZrDate]          = useState("");
+  const [zrSalaryMin,    setZrSalaryMin]     = useState("");
+  const [zrEmployment,   setZrEmployment]    = useState("");
+  const [zrExperience,   setZrExperience]    = useState("");
+  const [zrSearch,       setZrSearch]        = useState("");
+
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" | "" } | null>(null);
 
   const liPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -214,6 +268,7 @@ export default function Home() {
   const inPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const azPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const zrPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const showToast = (msg: string, type: "success" | "error" | "" = "") => {
     setToast({ msg, type });
@@ -240,6 +295,10 @@ export default function Home() {
 
   const loadAdzunaJobs = useCallback(async () => {
     try { setAdzunaJobs(await getAdzunaJobs()); } catch { /* ignore */ }
+  }, []);
+
+  const loadZipRecruiterJobs = useCallback(async () => {
+    try { setZiprecruiterJobs(await getZipRecruiterJobs()); } catch { /* ignore */ }
   }, []);
 
   const loadRuns = useCallback(async () => {
@@ -328,6 +387,22 @@ export default function Home() {
     }, 2000);
   }, [loadAdzunaJobs, loadRuns]);
 
+  const startZrPolling = useCallback(() => {
+    if (zrPollRef.current) clearInterval(zrPollRef.current);
+    zrPollRef.current = setInterval(async () => {
+      try {
+        const s = await getZipRecruiterStatus();
+        setZrStatus(s);
+        if (s.done) {
+          clearInterval(zrPollRef.current!);
+          zrPollRef.current = null;
+          loadZipRecruiterJobs();
+          loadRuns();
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }, [loadZipRecruiterJobs, loadRuns]);
+
   // ── Init ──────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -336,6 +411,7 @@ export default function Home() {
     loadIndeedJobs();
     loadDiceJobs();
     loadAdzunaJobs();
+    loadZipRecruiterJobs();
     loadRuns();
 
     getLinkedInStatus().then((s) => {
@@ -363,15 +439,21 @@ export default function Home() {
       if (s.running) { setShowAzStatus(true); startAzPolling(); }
     }).catch(() => {});
 
+    getZipRecruiterStatus().then((s) => {
+      setZrStatus(s);
+      if (s.running) { setShowZrStatus(true); startZrPolling(); }
+    }).catch(() => {});
+
     return () => {
       if (liPollRef.current) clearInterval(liPollRef.current);
       if (sjPollRef.current) clearInterval(sjPollRef.current);
       if (inPollRef.current) clearInterval(inPollRef.current);
       if (dcPollRef.current) clearInterval(dcPollRef.current);
       if (azPollRef.current) clearInterval(azPollRef.current);
+      if (zrPollRef.current) clearInterval(zrPollRef.current);
     };
-  }, [loadLinkedInJobs, loadStartupJobs, loadIndeedJobs, loadDiceJobs, loadAdzunaJobs, loadRuns,
-      startLiPolling, startSjPolling, startInPolling, startDcPolling, startAzPolling]);
+  }, [loadLinkedInJobs, loadStartupJobs, loadIndeedJobs, loadDiceJobs, loadAdzunaJobs, loadZipRecruiterJobs, loadRuns,
+      startLiPolling, startSjPolling, startInPolling, startDcPolling, startAzPolling, startZrPolling]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -532,6 +614,38 @@ export default function Home() {
     } catch { showToast("Failed to clear jobs.", "error"); }
   };
 
+  const handleStartZipRecruiter = async () => {
+    if (!zrKeyword.trim()) {
+      showToast("Please enter a keyword.", "error");
+      return;
+    }
+    try {
+      const res = await startZipRecruiterScraper({
+        keyword: zrKeyword.trim(),
+        date_posted: zrDate,
+        salary_min: zrSalaryMin,
+        employment_type: zrEmployment,
+        experience: zrExperience,
+      });
+      if (res.detail) { showToast(String(res.detail), "error"); return; }
+      showToast("ZipRecruiter scraper started!", "success");
+      setShowZrStatus(true);
+      setZrStatus({ ...DEFAULT_STATUS, running: true, progress: "Starting..." });
+      startZrPolling();
+    } catch {
+      showToast("Cannot reach backend. Is it running on port 8000?", "error");
+    }
+  };
+
+  const handleClearZipRecruiter = async () => {
+    if (!confirm("Delete all ZipRecruiter jobs from the database?")) return;
+    try {
+      await clearZipRecruiterJobs();
+      showToast("ZipRecruiter jobs cleared.", "success");
+      setZiprecruiterJobs([]);
+    } catch { showToast("Failed to clear jobs.", "error"); }
+  };
+
   // ── Filtered views ────────────────────────────────────────────────────────────
 
   const filteredLinkedin = linkedinJobs.filter((j) => {
@@ -557,6 +671,11 @@ export default function Home() {
   const filteredAdzuna = adzunaJobs.filter((j) => {
     if (!azSearch) return true;
     return `${j.job_title} ${j.company_name}`.toLowerCase().includes(azSearch.toLowerCase());
+  });
+
+  const filteredZiprecruiter = ziprecruiterJobs.filter((j) => {
+    if (!zrSearch) return true;
+    return `${j.job_title} ${j.company_name}`.toLowerCase().includes(zrSearch.toLowerCase());
   });
 
   const SELECT_CLS =
@@ -646,6 +765,16 @@ export default function Home() {
           }`}
         >
           ⚡ Adzuna
+        </button>
+        <button
+          onClick={() => setActiveTab("ziprecruiter")}
+          className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-colors border-2 ${
+            activeTab === "ziprecruiter"
+              ? "bg-purple-600 border-purple-600 text-white shadow-md"
+              : "bg-white border-gray-200 text-gray-600 hover:border-purple-300"
+          }`}
+        >
+          🏢 ZipRecruiter
         </button>
       </div>
 
@@ -1006,6 +1135,85 @@ export default function Home() {
           </div>
 
           <JobsTable jobs={filteredAdzuna} />
+        </>
+      )}
+
+      {/* ── ZipRecruiter Tab ────────────────────────────────────────────────────── */}
+      {activeTab === "ziprecruiter" && (
+        <>
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-7 mb-6">
+            <h2 className="text-sm font-black text-gray-500 uppercase tracking-widest mb-5">ZipRecruiter Search</h2>
+
+            <div className="flex gap-3 mb-5">
+              <div className="relative flex-1">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-lg">🔍</span>
+                <input
+                  type="text"
+                  placeholder="Job title, skills, or keywords..."
+                  value={zrKeyword}
+                  onChange={(e) => setZrKeyword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !zrStatus.running && handleStartZipRecruiter()}
+                  className="w-full pl-11 pr-5 py-3.5 border-2 border-gray-200 focus:border-purple-500 rounded-xl text-base font-semibold bg-gray-50 focus:bg-white focus:outline-none transition-colors"
+                />
+              </div>
+              <button
+                onClick={handleStartZipRecruiter}
+                disabled={zrStatus.running}
+                className="flex items-center gap-2 px-7 py-3.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors shadow-sm text-base whitespace-nowrap"
+              >
+                {zrStatus.running ? <><span className="animate-spin">⧖</span> Running...</> : <><span>▶</span> Start Scraper</>}
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-col gap-1.5 min-w-[160px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Date Posted</label>
+                <select value={zrDate} onChange={(e) => setZrDate(e.target.value)} className={SELECT_CLS}>
+                  {ZR_DATE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5 min-w-[160px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Min Salary ($120-300)</label>
+                <select value={zrSalaryMin} onChange={(e) => setZrSalaryMin(e.target.value)} className={SELECT_CLS}>
+                  {ZR_SALARY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5 min-w-[180px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Employment Type</label>
+                <select value={zrEmployment} onChange={(e) => setZrEmployment(e.target.value)} className={SELECT_CLS}>
+                  {ZR_EMPLOYMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5 min-w-[180px]">
+                <label className="text-xs font-black text-gray-500 uppercase tracking-wide">Experience Level</label>
+                <select value={zrExperience} onChange={(e) => setZrExperience(e.target.value)} className={SELECT_CLS}>
+                  {ZR_EXPERIENCE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 ml-auto flex-wrap">
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-cyan-50 text-cyan-700 border border-cyan-200 rounded-xl text-sm font-bold">📍 United States</span>
+                <span className="flex items-center gap-2 px-4 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-sm font-bold">🏠 Remote</span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mt-5 pt-5 border-t border-gray-100">
+              <button onClick={() => window.open(exportZipRecruiterCsvUrl(), "_blank")} className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors text-sm shadow-sm">⬇ Export CSV</button>
+              <button onClick={loadZipRecruiterJobs} className="flex items-center gap-2 px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors text-sm">↻ Refresh</button>
+              <button onClick={handleClearZipRecruiter} className="flex items-center gap-2 px-5 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-xl border border-red-200 hover:border-red-300 transition-colors text-sm">✕ Clear All</button>
+            </div>
+
+            {showZrStatus && <StatusBar status={zrStatus} />}
+          </div>
+
+          <div className="flex items-center gap-3 mb-5">
+            <div className="relative flex-1 max-w-md">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">🔎</span>
+              <input type="text" placeholder="Filter by title or company..." value={zrSearch} onChange={(e) => setZrSearch(e.target.value)} className="w-full pl-11 pr-5 py-3 border-2 border-gray-200 rounded-xl text-base font-semibold bg-white focus:outline-none focus:border-purple-500 transition-colors" />
+            </div>
+            <span className="text-base font-bold text-gray-500">{filteredZiprecruiter.length} of {ziprecruiterJobs.length} jobs</span>
+          </div>
+
+          <JobsTable jobs={filteredZiprecruiter} />
         </>
       )}
 

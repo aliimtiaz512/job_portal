@@ -8,12 +8,13 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from models import Job, StartupJob, IndeedJob, DiceJob, AdzunaJob, ScraperRun, Session, init_db
+from models import Job, StartupJob, IndeedJob, DiceJob, AdzunaJob, ZipRecruiterJob, ScraperRun, Session, init_db
 from scrapers.linkedin import STATUS_FILE as LINKEDIN_STATUS_FILE
 from scrapers.startupjobs import STATUS_FILE as STARTUPJOBS_STATUS_FILE
 from scrapers.indeed import STATUS_FILE as INDEED_STATUS_FILE
 from scrapers.dice import STATUS_FILE as DICE_STATUS_FILE
 from scrapers.adzuna import STATUS_FILE as ADZUNA_STATUS_FILE
+from scrapers.ziprecruiter import STATUS_FILE as ZIPRECRUITER_STATUS_FILE
 
 app = FastAPI(title="Job Scraper API")
 
@@ -34,12 +35,14 @@ _STARTUPJOBS_SCRIPT = os.path.join(os.path.dirname(__file__), "scrapers", "start
 _INDEED_SCRIPT      = os.path.join(os.path.dirname(__file__), "scrapers", "indeed",      "runner.py")
 _DICE_SCRIPT        = os.path.join(os.path.dirname(__file__), "scrapers", "dice",        "runner.py")
 _ADZUNA_SCRIPT      = os.path.join(os.path.dirname(__file__), "scrapers", "adzuna",      "runner.py")
+_ZIPRECRUITER_SCRIPT = os.path.join(os.path.dirname(__file__), "scrapers", "ziprecruiter", "runner.py")
 
 _proc_linkedin:    subprocess.Popen | None = None
 _proc_startupjobs: subprocess.Popen | None = None
 _proc_indeed:      subprocess.Popen | None = None
 _proc_dice:        subprocess.Popen | None = None
 _proc_adzuna:      subprocess.Popen | None = None
+_proc_ziprecruiter: subprocess.Popen | None = None
 
 _DEFAULT_STATUS = {
     "running": False, "progress": "", "total": 0,
@@ -91,6 +94,14 @@ class DiceScrapeRequest(BaseModel):
 class AdzunaScrapeRequest(BaseModel):
     keyword: str
     max_days_old: str = ""
+
+
+class ZipRecruiterScrapeRequest(BaseModel):
+    keyword: str
+    date_posted: str = ""
+    salary_min: str = ""
+    employment_type: str = ""
+    experience: str = ""
 
 
 # ── LinkedIn endpoints ────────────────────────────────────────────────────────
@@ -480,6 +491,93 @@ def export_adzuna_csv():
             iter([buf.getvalue()]),
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=adzuna_jobs.csv"},
+        )
+    finally:
+        session.close()
+
+
+# ── ZipRecruiter endpoints ────────────────────────────────────────────────────
+
+@app.post("/api/scrape/ziprecruiter")
+def start_ziprecruiter_scrape(req: ZipRecruiterScrapeRequest):
+    global _proc_ziprecruiter
+    if _is_running(_proc_ziprecruiter):
+        raise HTTPException(status_code=409, detail="ZipRecruiter scraper is already running.")
+
+    _proc_ziprecruiter = subprocess.Popen(
+        [sys.executable, _ZIPRECRUITER_SCRIPT,
+         req.keyword, req.date_posted, req.salary_min, req.employment_type, req.experience],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ.copy(),
+        cwd=os.path.dirname(__file__),
+    )
+    return {"message": "ZipRecruiter scraper started."}
+
+
+@app.get("/api/status/ziprecruiter")
+def get_ziprecruiter_status():
+    return _read_status(ZIPRECRUITER_STATUS_FILE)
+
+
+@app.get("/api/jobs/ziprecruiter")
+def get_ziprecruiter_jobs():
+    session = Session()
+    try:
+        return [j.to_dict() for j in session.query(ZipRecruiterJob).order_by(ZipRecruiterJob.id.desc()).all()]
+    finally:
+        session.close()
+
+
+@app.delete("/api/jobs/ziprecruiter/clear")
+def clear_ziprecruiter_jobs():
+    session = Session()
+    try:
+        session.query(ZipRecruiterJob).delete()
+        session.commit()
+        return {"message": "All ZipRecruiter jobs cleared."}
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/jobs/ziprecruiter/{job_id}")
+def delete_ziprecruiter_job(job_id: int):
+    session = Session()
+    try:
+        job = session.query(ZipRecruiterJob).filter_by(id=job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        session.delete(job)
+        session.commit()
+        return {"message": "Deleted."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/export/ziprecruiter/csv")
+def export_ziprecruiter_csv():
+    session = Session()
+    try:
+        jobs = session.query(ZipRecruiterJob).order_by(ZipRecruiterJob.id.desc()).all()
+        if not jobs:
+            raise HTTPException(status_code=404, detail="No ZipRecruiter jobs to export.")
+        df = pd.DataFrame([j.to_dict() for j in jobs])
+        df.drop(columns=["id"], inplace=True, errors="ignore")
+        buf = io.StringIO()
+        df.to_csv(buf, index=False)
+        buf.seek(0)
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=ziprecruiter_jobs.csv"},
         )
     finally:
         session.close()

@@ -237,6 +237,48 @@ export function exportAdzunaCsvUrl(): string {
   return `${API_BASE}/export/adzuna/csv`;
 }
 
+// ── ZipRecruiter ─────────────────────────────────────────────────────────────
+
+export type ZipRecruiterJob = Job;
+
+export interface ZipRecruiterScrapeParams {
+  keyword: string;
+  date_posted: string;
+  salary_min: string;
+  employment_type: string;
+  experience: string;
+}
+
+export async function startZipRecruiterScraper(
+  params: ZipRecruiterScrapeParams
+): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/scrape/ziprecruiter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return res.json();
+}
+
+export async function getZipRecruiterStatus(): Promise<ScraperStatus> {
+  const res = await fetch(`${API_BASE}/status/ziprecruiter`);
+  return res.json();
+}
+
+export async function getZipRecruiterJobs(): Promise<ZipRecruiterJob[]> {
+  const res = await fetch(`${API_BASE}/jobs/ziprecruiter`);
+  return res.json();
+}
+
+export async function clearZipRecruiterJobs(): Promise<{ message?: string; detail?: string }> {
+  const res = await fetch(`${API_BASE}/jobs/ziprecruiter/clear`, { method: "DELETE" });
+  return res.json();
+}
+
+export function exportZipRecruiterCsvUrl(): string {
+  return `${API_BASE}/export/ziprecruiter/csv`;
+}
+
 // ── Shared ────────────────────────────────────────────────────────────────────
 
 export async function getRuns(): Promise<ScraperRun[]> {
